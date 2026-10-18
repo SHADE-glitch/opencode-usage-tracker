@@ -1,5 +1,5 @@
 -r requirements.txt
-pytest>=8
+pytest>=9.1.1
 # Parallel test execution, and deliberately *opt-in*: `-n auto` is a flag somebody
 # types, never an `addopts` in a config file. MAINTENANCE.md §11 leans on the absence of
 # any output-changing pytest config ("the count is always there: read the last line of the
