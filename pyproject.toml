@@ -8,4 +8,4 @@ version = "0.1.0"
 # The interpreter floor. The READMEs badge it and docs/maintenance/compatibility.md
 # lists it; keep the three in step when it moves.
 requires-python = ">=3.11"
-dependencies = ["textual>=8.2,<9"]
+dependencies = ["textual>=8.2.8,<9"]
