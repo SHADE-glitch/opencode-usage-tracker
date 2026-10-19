@@ -1662,3 +1662,32 @@ Evidence 2026-10-19: every relative link under docs/ resolves; python3 -m pytest
          338 passed + 3 subtests.
 Cost     One explicit anchor line in README.zh-CN.md; the anchor no longer depends on the emoji.
 Commit   c0170cc
+
+### D-081 · 2026-10-19 · fix
+
+Symptom  OpenCode 2.x moved its message store from `part`/`message` to `session_v2`/
+         `session_message` and left the v1 tables frozen at the upgrade; the reader kept
+         indexing the frozen side, so every panel read 0 for the new host while `ocut sync`
+         kept printing "done". The hook failed to load outright, because the v2 loader
+         rejects a default export without `setup`/`effect`.
+Change   `host_format()` picks one layout and never merges them — the same call is keyed
+         `prt_…` in v1 and `call_…` in v2, so indexing both would double-count the migrated
+         history; a `host-format` marker in `sync_state` rebuilds the usage tables once on
+         the switch. `session_message` is read by rowid with a holdback at the first message
+         still streaming or carrying a non-final tool entry; v2 has no step total, so
+         `total_tokens` is derived there and `total_tokens_source` says so. Tool renames
+         (`bash`→`shell`, `task`→`subagent`, `apply_patch`→`patch`) and the `skill` tool's
+         `input.id` are projected into the v1 shapes. The hook exports `{ id, server, setup }`:
+         v1 calls `server`, v2 calls `setup(ctx)`.
+Evidence L0 2026-10-19: `.venv/bin/python -m pytest scripts/tests -q` **345 passed**, 3
+         subtests (338 before: v2 fixtures plus the cutover, holdback and unknown-type
+         cases). Live: one rebuild from the v2 side returned 32,623 tool calls / 26,815
+         model calls / 377 sessions with only `call_`/`msg_` ids, and `ocut health` reads
+         `unparsed 0`, `host-format 2`.
+Cost     The one-layout rule is enforced by a format marker, not by the schema: a host that
+         wrote v1-shaped rows on top of v2 tables would be read as pure v2, and the frozen
+         v1 rows stay invisible by design. The v2 message `data` blob is read field-by-field
+         through the registry, so a new leaf lands in `unparsed` rather than a NULL panel —
+         but a *renamed* assistant field degrades into the same counter, and M1's blind spot
+         (what the host never wrote) now concerns tool entries, not parts.
+Commit   95827b2
