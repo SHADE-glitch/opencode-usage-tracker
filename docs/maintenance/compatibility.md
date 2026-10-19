@@ -19,11 +19,11 @@ is where the host's names live, and `ocut format` prints it. This file is about
 | Python floor | 3.11 | `pyproject.toml` (`requires-python`) | the oldest interpreter the CLI/TUI promises to start on | the README badge and `test_the_workflow_states_the_versions_it_runs` |
 | textual | `>=8.2,<9` | `pyproject.toml`, `requirements.txt` | the TUI stack; the interface claims are measured on the installed 8.x | the requirements file the installer reads |
 | CI interpreters | 3.11 / 3.14 | `.github/workflows/ci.yml` | both ends of the declared range — the floor and the highest version the suite was run green on — are the interpreters CI runs the suite on | `test_maintenance_docs.py` (`test_every_ci_claim_in_the_docs_states_the_real_matrix`), which reads the workflow's own `python-version` list |
-| OpenCode format | not a single version | `scripts/ocut-sync.py`'s registry | the host tables (`session`, `message`, `part`), part types, tool names and argument names this reader reads | `scripts/tests/test_ocut_sync.py` — no field may be read without being registered, no registered field may go unread; `ocut format` prints the surface |
+| OpenCode format | not a single version | `scripts/ocut-sync.py`'s registry | the host layouts (`session`/`message`/`part` in v1, `session_v2`/`session_message` in v2), part types, tool names and argument names this reader reads | `scripts/tests/test_ocut_sync.py` — no field may be read without being registered, no registered field may go unread; `ocut format` prints the surface |
 
-The host this was written on runs OpenCode 1.18.x, `python3` 3.14 and a 3.13 `.venv`.
-**That is not a compatibility claim** — it is where the measurements were taken. Re-take
-them with [`measurements.md`](measurements.md) before quoting any of it.
+The host this was written on ran OpenCode 1.18.x and now runs 2.0.x, `python3` 3.14 and a
+3.13 `.venv`. **That is not a compatibility claim** — it is where the measurements were
+taken. Re-take them with [`measurements.md`](measurements.md) before quoting any of it.
 
 ---
 
@@ -35,7 +35,8 @@ Only the rows we have evidence for. An empty row is not "nothing changed", it is
 
 | OpenCode | What this project observed | Consequence we carry |
 |---|---|---|
-| any | `session` / `message` / `part` is the persisted shape; `step-finish` carries tokens, its parent `message` carries the model | the reader selects a whitelist of columns and reads a whitelist of fields; a rename lands in `unparsed`, not in a NULL panel |
+| 1.x | `session` / `message` / `part` is the persisted shape; `step-finish` carries tokens, its parent `message` carries the model | the reader selects a whitelist of columns and reads a whitelist of fields; a rename lands in `unparsed`, not in a NULL panel |
+| 2.x | `session_v2` / `session_message` replaces the message store and the v1 tables are frozen at the upgrade; an assistant message carries `tokens` and `model` itself, tool calls are `type: "tool"` entries in its `content`; `bash`→`shell`, `task`→`subagent`, `apply_patch`→`patch`, and the `skill` tool names its target in `input.id` | `host_format()` picks one layout and never merges them (the same call is `prt_…` in v1 and `call_…` in v2); a `host-format` marker rebuilds the usage tables once on the switch; the cursor holds back the first row whose message or tool entry is still streaming |
 | any | a plugin's tool is recorded under the tool's own name, with nothing naming the plugin; a plugin command is not recorded at all | `plugin_usage` is fed by `plugin/ocut-hook.js`'s sidecar, never by the host database (README M3) |
 | any | `opencode.db` is a live file the host keeps mutating and pruning | the reader opens it `mode=ro` and treats a deletion as a `sync_state.note`, never as an error |
 
@@ -71,7 +72,7 @@ Not OpenCode's database, but the same decay risk, so the same table.
 
 | Source | What is read | Contract |
 |---|---|---|
-| The host database (`~/.local/share/opencode/opencode.db`) | `session`, `message`, `part` rows | opened `mode=ro` with `PRAGMA query_only = ON`; a missing file raises rather than creating an empty one; a prose field (`output`, `title`, `metadata`, `error`, a `text`/`reasoning` body, a session `title`) is **counted, never read** |
+| The host database (`~/.local/share/opencode/opencode.db`) | `session`, `message`, `part` rows (v1) or `session_v2`, `session_message` rows (v2) | opened `mode=ro` with `PRAGMA query_only = ON`; a missing file raises rather than creating an empty one; a prose field (`output`, `title`, `metadata`, `error`, a `text`/`reasoning` body, a session `title`, v2's `state.content`/`state.error`) is **counted, never read** |
 | The host config (`~/.config/opencode`) | MCP server names, plugin specs, and the installed inventory | read-only; a parse failure is **never** read as "empty config" |
 | This project's own sidecar (`plugin-events.jsonl`) | plugin `surface` and `call` records | read by byte offset; a file shorter than the cursor was truncated, so it is re-read from the start (idempotent — every record is keyed by its own id) |
 | This project's own settings (`~/.config/ocut/config.toml`) | the six keys | read-only; a bad value is a hard error that names the key, never a silent default |

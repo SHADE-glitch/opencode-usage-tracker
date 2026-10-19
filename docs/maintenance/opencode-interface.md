@@ -17,11 +17,18 @@ is wrong but the data is fine.
 
 Opened `mode=ro` with `PRAGMA query_only = ON`; a missing file raises. Never written.
 
-| Table | What we take from it | Writes to | If it disappears |
-|---|---|---|---|
-| `part` | `type`, and for a `tool` part its `tool` name and `state` (`status`, `input`, `time`); for a `step-finish` part its `reason`, `cost` and `tokens` | `tool_calls`, `skill_usage`, `agent_usage`, `mcp_usage`, `model_calls` | silent — no usage rows at all; the run still prints "done" |
-| `message` | the model behind a step (`modelID`, `providerID`, `variant`, `agent`) | `model_calls.model` / `.provider` / `.variant` / `.agent` | cosmetic — those columns go NULL |
-| `session` | the session's project, directory, agent, model, parent and the host's own cost/token rollup | `sessions` | silent — no session rows, so the dashboard's Sessions/Projects read 0 |
+| Table | Layout | What we take from it | Writes to | If it disappears |
+|---|---|---|---|---|
+| `part` | v1 | `type`, and for a `tool` part its `tool` name and `state` (`status`, `input`, `time`); for a `step-finish` part its `reason`, `cost` and `tokens` | `tool_calls`, `skill_usage`, `agent_usage`, `mcp_usage`, `model_calls` | silent — no usage rows at all; the run still prints "done" |
+| `message` | v1 | the model behind a step (`modelID`, `providerID`, `variant`, `agent`) | `model_calls.model` / `.provider` / `.variant` / `.agent` | cosmetic — those columns go NULL |
+| `session` | v1 | the session's project, directory, agent, model, parent and the host's own cost/token rollup | `sessions` | silent — no session rows, so the dashboard's Sessions/Projects read 0 |
+| `session_message` | v2 | `type`, `seq`; for an `assistant` row its `tokens`, `cost`, `model`, `agent`, `time.completed` and the `type: "tool"` entries in `content` (`name`, `state.status`, `state.input`, `time.ran`/`completed`) | the same five tables | silent — the v1 tables are frozen, so a v2 host read as v1 records nothing new |
+| `session_v2` | v2 | the same session fields as `session` | `sessions` | silent — no session rows |
+
+The reader picks **one** layout: `host_format()` answers `v2` only when both v2 tables
+exist, and the two are never merged. The same call is `prt_…` in v1 and `call_…` in v2,
+so indexing both would double-count the migrated history; a `host-format` marker in
+`sync_state` rebuilds the usage tables once when the layout changes.
 
 Two things a passive reader cannot see and does not pretend to: a plugin's identity behind
 a tool call, and a plugin command at all. Both are the sidecar's job (§3).
@@ -73,8 +80,10 @@ documented in README's environment table and in
 
 ## 6. The hook export contract, because it is the one thing that can stop everything
 
-`plugin/ocut-hook.js` must export **only** `export default { id, server }`. OpenCode
+`plugin/ocut-hook.js` must export **only** `export default { id, server, setup }`. OpenCode
 treats every exported function in a plugin module as a plugin factory and stops only when
-the default export is an object carrying `server`; a named `export function` gets called as
-a factory, which aborts the whole plugin load and stops plugin recording silently.
-`scripts/tests/test_ocut_hook.py` keeps that true.
+the default export is an object carrying the entry point it expects; a named `export
+function` gets called as a factory, which aborts the whole plugin load and stops plugin
+recording silently. v1 calls `server`; v2 calls `setup(ctx)` and ignores `server`, and its
+loader rejects a default without `setup` or `effect`. `scripts/tests/test_ocut_hook.py`
+keeps that true.

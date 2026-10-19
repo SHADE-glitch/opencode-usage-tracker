@@ -2373,7 +2373,7 @@ if HAVE_TEXTUAL:
                     # the transient "Syncing…" from `r` survives the sync that
                     # already finished.
                     self._set_status(self._status_line())
-                self.notify(f"Synced {count_n(read, 'host part')}")
+                self.notify(f"Synced {count_n(read, 'host record')}")
             else:
                 # The same composer as the data line: a failed sync is a fact
                 # *about* the numbers, not a replacement for them.

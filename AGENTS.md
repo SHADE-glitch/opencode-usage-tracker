@@ -21,11 +21,14 @@ hook, and the CLI/TUI that report over the result. Three layers, in dependency o
 
 1. `scripts/ocut-sync.py` — the **indexer**. Opens OpenCode's own
    `~/.local/share/opencode/opencode.db` `mode=ro` with `PRAGMA query_only = ON` and copies
-   what it needs into the tracker's own database. It reads three host tables (`session`,
-   `message`, `part`), classifies each `tool` part (a builtin, the `skill` tool, the `task`
-   tool, or an MCP server's tool), and reads each `step-finish` part's tokens. A record it
-   cannot use is counted in `unparsed`, never dropped. The OpenCode format registry at the
-   top of the file is the single list of host names it depends on; `ocut format` prints it.
+   what it needs into the tracker's own database. It reads **one** host layout, never both:
+   v1's `session`/`message`/`part`, or v2's `session_v2`/`session_message` (the v1 tables
+   are frozen at the upgrade, and the same call is keyed `prt_…` in one and `call_…` in the
+   other). It classifies each tool record (a builtin, the `skill` tool, the `task`/`subagent`
+   tool, or an MCP server's tool) and reads each step's tokens (`step-finish` in v1, the
+   assistant message's `tokens` in v2). A record it cannot use is counted in `unparsed`,
+   never dropped. The OpenCode format registry at the top of the file is the single list of
+   host names it depends on; `ocut format` prints it.
 2. `scripts/ocut_db.py` — the shared data layer: the schema (`TABLES_SQL` + `VIEWS_SQL`), the
    settings registry (`DEFAULTS`, `ENV_NAMES`, `_BOUNDS`, `load_config`), the queries, and
    the snapshot/restore helpers. Imported by the indexer, the CLI and the TUI.
@@ -124,8 +127,10 @@ code; the schema version tracks the data. Never conflate them.
   Guard: `test_no_prose_field_is_copied_out_of_the_host`.
 - **The plugin-usage sidecar is the only input that is ours, and the hook is its only
   writer.** `plugin/ocut-hook.js` must export its factory **only** as
-  `export default { id, server }`; a named export makes OpenCode call it as a factory and
-  aborts the whole plugin load, stopping plugin recording silently. `OCUT_HOOK_DISABLE=1`
+  `export default { id, server, setup }`; a named export makes OpenCode call it as a factory
+  and aborts the whole plugin load, stopping plugin recording silently. v1 calls `server`,
+  v2 calls `setup` and ignores `server`; a default without `setup` is rejected outright by
+  the v2 loader. `OCUT_HOOK_DISABLE=1`
   turns it off; `OCUT_HOOK_EVENTS` moves the sidecar and the hook and `ocut sync` must agree.
   The sidecar is capped (8 MiB) and rotated by truncation; the reader detects a file shorter
   than its cursor and re-reads from the start. Guards: `test_default_export_is_the_loader_contract_and_nothing_else`,

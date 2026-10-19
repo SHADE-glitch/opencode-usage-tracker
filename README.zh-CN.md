@@ -2,7 +2,7 @@
 
 # 🎯 OpenCode 用量追踪器（`ocut`）
 
-![OpenCode](https://img.shields.io/badge/OpenCode-1.18.x-blue)
+![OpenCode](https://img.shields.io/badge/OpenCode-1.18.x%20%7C%202.x-blue)
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
 ![SQLite](https://img.shields.io/badge/storage-SQLite-003B57?logo=sqlite)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
@@ -33,22 +33,27 @@ MCP 工具、每一步模型的 token、以及每个会话——谁被调用、�
 OpenCode 已经把你需要的东西落盘了——只是那个形状是为「恢复会话」而设的，不是为回答
 「我到底在用哪些 skill」而设的。
 
-- 每次工具调用都是 `opencode.db` 里的一条 `tool` part，无论工具是什么：内置工具、`skill`
-  工具、启动子 agent 的 `task` 工具、还是某个 MCP 服务的工具。
-- 每一步模型是 `step-finish` part，带着那一步的 token 与 cost；模型挂在它的**父 message**
-  上，不在这一步里。
-- 会话、项目、目录是 `session` 表里的行。
+- 每次工具调用都是 `opencode.db` 里的一条 `tool` 记录，无论工具是什么：内置工具、`skill`
+  工具、启动子 agent 的 `task`/`subagent` 工具、还是某个 MCP 服务的工具。
+- 每一步模型带着那一步的 token 与 cost——v1 是 `step-finish` part，v2 是 assistant message
+  自己的 `tokens` 对象；模型挂在 message 上。
+- 会话、项目、目录是 `session`（v1）或 `session_v2`（v2）表里的行。
 - **装了什么**——skills、agents、slash 命令、MCP 服务、插件——在配置目录
   （`~/.config/opencode`）里，不在数据库里。
+
+OpenCode v2 把消息存储从 `part`/`message` 搬到了 `session_message`，并把 v1 的两张表冻结在升级那一刻。
+`ocut` 检测到布局后只读**其中一套**，绝不两套都读：同一次调用在 v1 里键是 `prt_…`、在 v2 里是
+`call_…`，两套都索引会把迁移过来的历史算两遍。切换只发生一次、自动完成，并从 v2 一侧重建 tracker
+自己的用量表。
 
 `ocut` 把上面这些**只读**读出来，变成面板和报表。它刻意**不做**两件事：
 
 - **绝不写 OpenCode 的数据库或配置。** 宿主库以 `mode=ro` 打开并设 `PRAGMA query_only = ON`，
   所以本项目的 bug 也无法让这句话变成假的。
-- **绝不存消息或工具的散文。** 一条 `tool` part 带着 `output`、`title`、`metadata`、`error`；
-  一条 `text`/`reasoning` part 装着你的提示词和模型的回答；一条会话行带着 OpenCode 从你
-  第一条消息生成的 `title`。这些**一个都不读**。落进 `usage.db` 的只有标识符、状态、时长、
-  token 数与计数。
+- **绝不存消息或工具的散文。** 一条工具记录带着 `output`、`title`、`metadata`、`error`（v2 的工具
+  条目把它们放在 `state` 下）；一条 `text`/`reasoning` part 装着你的提示词和模型的回答；一条会话行
+  带着 OpenCode 从你第一条消息生成的 `title`。这些**一个都不读**。落进 `usage.db` 的只有标识符、
+  状态、时长、token 数与计数。
 
 设计约束（刻意遵守）：
 
@@ -71,7 +76,7 @@ OpenCode 把插件的工具记在工具自己的名字下，没有任何东西�
 | | |
 |---|---|
 | 操作系统 | Linux——开发与验证环境为 Ubuntu；其他发行版**未验证** |
-| OpenCode | 1.18.x——本项目读取其数据库与配置的宿主（见 [compatibility](docs/maintenance/compatibility.md)） |
+| OpenCode | 1.18.x 与 2.x——本项目读取其数据库与配置的宿主（见 [compatibility](docs/maintenance/compatibility.md)） |
 | Python | CLI 与 TUI 需要 3.11+；CI 在 **3.11 与 3.14** 上跑测试 |
 | Textual | `textual>=8.2,<9`——只有交互式 TUI 需要，由 `install.sh` 装进 venv |
 | `uv` | 可选，但推荐用来创建 venv；普通的 `python3 -m venv` 同样可行 |
@@ -214,14 +219,15 @@ ocut format  [--write]
 ```
 
 - `sync`：把 OpenCode 的数据库索引进 tracker 自己的库。`--full` 从头重建（重建前先做快照）；
-  `--quiet` 是 TUI 后台 worker 跑的模式。它是增量的：rowid 游标消费新的 `part` 行，而 `session`
-  每次整表重读，因为宿主会重写它的 rollup。
+  `--quiet` 是 TUI 后台 worker 跑的模式。它是增量的：rowid 游标消费新的宿主记录（v1 是 `part`，
+  v2 是 `session_message`），而会话表每次整表重读，因为宿主会重写它的 rollup。
 - `stats`：所有类别的总览——会话、项目、工具调用、skill / agent / MCP 调用、**已安装**的插件与
   命令、模型步数与 token。
 - `tools` / `skills` / `agents` / `mcp`：某一类别的表。`plugins` 是「已安装 ∪ 已使用」的并集，
   并带上归属插件的版本与声明路径。
-- `models`：宿主自己 `step-finish` 记录汇总出的按模型 token 合计，外加最近若干步。`Total` 是宿主
-  自报的那一步总量（如果它给了）；cache read/write 单独显示，**不**算进它里面。
+- `models`：宿主自己按步用量（v1 的 `step-finish`，v2 的 assistant message `tokens`）汇总出的按模型
+  token 合计，外加最近若干步。`Total` 是宿主自报的那一步总量（如果它给了）；cache read/write 单独
+  显示，**不**算进它里面。
 - `show <kind> <name>`：某个实体的最近调用。`recent`：最近的任意工具调用。`inventory`：装了什么、
   有什么可用。
 - `export`：把每个视图与表 dump 成 JSON。
@@ -283,7 +289,8 @@ ocut format  [--write]
 
 ```
 OpenCode 自己的状态（只读——从不以写入方式打开）
-  ~/.local/share/opencode/opencode.db    session · message · part
+  ~/.local/share/opencode/opencode.db    session · message · part  （v1）
+                                         session_v2 · session_message  （v2）
   ~/.config/opencode/                    已安装的 skills · agents · commands · mcp · plugin
         │
         │  ocut sync   → scripts/ocut-sync.py   （以 mode=ro 打开宿主）
@@ -299,9 +306,9 @@ OpenCode 自己的状态（只读——从不以写入方式打开）
         ▲  只由 plugin/ocut-hook.js 写入，由 ocut sync 摄取
 ```
 
-- **来源——只读。** OpenCode 的 `opencode.db`（`session`、`message`、`part`）以及
-  `~/.config/opencode` 下已安装的清单。宿主库以 `mode=ro` 打开并设 `PRAGMA query_only = ON`，
-  文件不存在是错误，不是「空成功」。
+- **来源——只读。** OpenCode 的 `opencode.db`（v1 的 `session`/`message`/`part`，v2 的
+  `session_v2`/`session_message`）以及 `~/.config/opencode` 下已安装的清单。宿主库以 `mode=ro`
+  打开并设 `PRAGMA query_only = ON`，文件不存在是错误，不是「空成功」。
 - **同步。** `ocut sync` 把需要的东西复制进 tracker 自己的库；`--full` 从头重建（重建前先快照）。
 - **存储。** `~/.local/share/opencode-usage-tracker/usage.db`——tracker 自己的 SQLite，只由
   `ocut` 写入，WAL 模式、5 秒 busy timeout。
@@ -313,14 +320,16 @@ OpenCode 自己的状态（只读——从不以写入方式打开）
 `plugin_surface`、`sessions`、`inventory`、`unparsed`、`sync_state`。
 视图：`v_tools`、`v_skills`、`v_agents`、`v_mcp`、`v_plugins`。
 
-- `tool_calls`：每条 `tool` part 一行，无论工具是什么。`category` 是
-  `builtin | skill | agent | mcp`；`status` 是宿主自己的 `state.status` 原样。
+- `tool_calls`：每条工具记录一行，无论工具是什么（v1 是 `tool` part，v2 是 `session_message`
+  里的工具条目）。`category` 是 `builtin | skill | agent | mcp`；`status` 是宿主自己的
+  `state.status` 原样。
 - `skill_usage`：`skill` 工具的调用；skill 名读自 `state.input.name`，那是本项目允许看的两个
   参数名之一。
-- `agent_usage`：`task` 工具的调用（启动了一个子 agent），按 `state.input.subagent_type` 归类。
+- `agent_usage`：`task`/`subagent` 工具的调用（启动了一个子 agent），按 `state.input.subagent_type` 归类。
 - `mcp_usage`：MCP 工具调用，按名字（`<server>_<tool>`）对照宿主配置里列出的服务解析，
   **最长前缀**优先。
-- `model_calls`：每条 `step-finish` part 一行；token 与 cost 在这里，模型来自父 message。
+- `model_calls`：每个模型步一行（v1 的 `step-finish`，v2 的 assistant message）；token 与 cost
+  在这里，模型来自 message。
 - `sessions`：每个 OpenCode 会话一行（含子会话），带宿主自己的按会话 rollup。`sessions` 与
   `model_calls` 是同一测量的两个粒度，**绝不相加**。
 - `inventory`：装了什么，读自宿主的目录与配置：skills、agents、commands、MCP 服务、插件、
@@ -395,8 +404,8 @@ ocut vacuum            # 压缩文件，并报告回收回来多少
 
 下面这份清单覆盖 **M1–M17**。
 
-- **M1** OpenCode 自己的数据库是**事实来源**。`ocut` 只看得见宿主写下的东西；宿主从没为某次调用
-  写下 `part`，它就是不可见，而不是被记错。
+- **M1** OpenCode 自己的数据库是**事实来源**。`ocut` 只看得见宿主写下的东西；宿主从没写下的调用
+  （v1 的 `part`，v2 的 `session_message` 里的工具条目）就是不可见，而不是被记错。
 - **M2** 宿主数据库与配置只读、**从不写入宿主**——以 `mode=ro` 打开并设 `PRAGMA query_only = ON`。
   因此 `ocut` 无法修复或回填宿主，只能索引它。
 - **M3** 插件用量需要那个可选的 hook **以及**一次 OpenCode 重启。在那之前 `plugin_usage` 是空的，
@@ -410,9 +419,9 @@ ocut vacuum            # 压缩文件，并报告回收回来多少
   不带状态，命令则根本没有 after-hook。
 - **M6** 当 OpenCode 的持久化格式变了，读取器把这条记录计成 `unparsed` 而不是去猜。升级之后
   `ocut health` 的 `UNPARSED` 行跳变，说明格式变了，不是你不用某个工具了。
-- **M7** 从不存消息或工具的散文。part 的 `output`、`title`、`metadata`、`error`，`text`/`reasoning`
-  正文，以及会话 `title`，读取器都不点它们的名字；落库的只有标识符、状态、时长与计数。**消息正文**
-  永不落盘。
+- **M7** 从不存消息或工具的散文。工具记录的 `output`、`title`、`metadata`、`error`（v1 的 part 或
+  v2 的 `state`），`text`/`reasoning` 正文，以及会话 `title`，读取器都不点它们的名字；落库的只有
+  标识符、状态、时长与计数。**消息正文**永不落盘。
 - **M8** 每步的 `model_calls` 与宿主的按会话 rollup `sessions` 是同一测量的两个粒度。它们并排显示，
   **绝不相加**。
 - **M9** MCP 调用按名字对照宿主自己的配置归属，**最长前缀**优先。没有哪个已配置服务认领的工具名不会
@@ -435,11 +444,13 @@ ocut vacuum            # 压缩文件，并报告回收回来多少
   inventory：前一组需要一个会话目录作为起点，后一组要下载东西，而这个读取器不下载。只装在项目层
   的技能因此不会显示为已安装。把共享技能放进上面两个根之一就会被认到。
 - **M13** Tokens 与 Usage 两张表会显示 `Cache miss` 列和 `Usage Total`，尽管宿主并没有发布这些字段：
-  一条 `step-finish` part 只带一个*未命中缓存*的 `prompt_tokens`，外加 `tokens.cache.read` /
-  `tokens.cache.write`。这些标签照搬姊妹项目 CodeBuddy 的 TUI，所以这是一次**重新标注**，不是新的
-  测量值：`Cache miss` 就是那段未命中缓存的输入，`Cache hit` 是缓存读取量，`Input` 是三者之和
-  （完整 prompt），`Usage Total` 是仅供展示的 `Input + Output + cache hit`。`API Total` 仍是宿主自己的
-  step 总计；这些派生数字要与它并排看，绝不代替它。
+  宿主的用量记录只带一个*未命中缓存*的 `prompt_tokens`，外加 `tokens.cache.read` /
+  `tokens.cache.write`（v1 是 `step-finish`，v2 是 assistant 的 `tokens`）。这些标签照搬姊妹项目
+  CodeBuddy 的 TUI，所以这是一次**重新标注**，不是新的测量值：`Cache miss` 就是那段未命中缓存的输入，
+  `Cache hit` 是缓存读取量，`Input` 是三者之和（完整 prompt），`Usage Total` 是仅供展示的
+  `Input + Output + cache hit`。`API Total` 仍是宿主自己的 step 总计；这些派生数字要与它并排看，
+  绝不代替它。v2 不发送 step 总计，所以那里的 `total_tokens` 是派生的，`total_tokens_source`
+  会写明这一点。
 - **M14** `state` 列在没有相反**没有证据**时读作 `installed`，在 Plugins 页上这就是它的含义。那一页的
   用量只有那个可选的 hook 会写（M3），所以「装了、hook 什么也没记到」的插件，与「装了、从没被碰过」的
   插件拿到的是同一个标签。这个标签刻意只讲 inventory 行，不讲用量：这一列里没有任何一个字在说

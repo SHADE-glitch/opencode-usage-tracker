@@ -61,6 +61,15 @@ TABLE_MESSAGE = "message"
 TABLE_PART = "part"
 CURSOR_TABLES = (TABLE_PART,)          # see "cursor rules" below
 
+# OpenCode v2 replaced the message store. ``part``/``message``/``session`` stop
+# growing at the upgrade; ``session_message``/``session_v2`` carry the same
+# history plus everything after it. Verified on this host: every v1 session id
+# exists in v2, and the 32,777 v1 tool parts are exactly the v2 tool entries
+# created before the cutover. So a v2 host is read *instead of* v1, never both —
+# reading both would index the same calls twice under different ids.
+TABLE_SESSION_V2 = "session_v2"
+TABLE_MESSAGE_V2 = "session_message"
+
 # Part types. The set is the *measured* census of this host's 92,858 live parts
 # (2026-10-12), not the union of everything a doc claims exists:
 #   tool 24665 · step-start 20919 · step-finish 20627 · reasoning 15451
@@ -89,7 +98,6 @@ TOOL_TIME_FIELDS = frozenset({"start", "end"})
 SKILL_ARG_FIELDS = frozenset({"name"})
 TASK_ARG_FIELDS = frozenset({"subagent_type"})
 SKILL_TOOL = "skill"
-TASK_TOOL = "task"
 # Measured on this host: 5916 completed / 82 error / 2 running out of 6000 recent
 # tool parts. ``running`` is the only state that changes after the row is
 # inserted, and it is what the cursor holdback is for.
@@ -127,6 +135,36 @@ USAGE_PRESENT_FIELDS = ("input", "output")
 # Of these, only the four below are ever read; ``path``, ``summary`` and
 # ``error.data.message`` are prose or absolute paths and stay in the host.
 MESSAGE_MODEL_FIELDS = frozenset({"modelID", "providerID", "variant", "agent"})
+
+# ``session_message.data`` (v2). One row per message; only ``assistant`` rows
+# carry usage and tool entries:
+#   {"time": {"created","streamed","completed"}, "agent": "build",
+#    "model": {"id","providerID","variant"}, "finish": "tool-calls",
+#    "cost": 0, "tokens": {"input","output","reasoning",
+#                          "cache": {"read","write"}},
+#    "content": [{"type":"tool","id":"call_…","name":"shell",
+#                 "state":{"status","input","metadata","content","error"},
+#                 "time":{"created","ran","completed"}}, …]}
+# ``content[].state.content`` is the tool's output and ``state.error`` its error
+# text; both are named here so the registry can say they are refused. ``tokens``
+# is absent while the message is still streaming — that is the v2 holdback signal.
+V2_MESSAGE_TYPE_FIELD = "type"
+V2_HANDLED_MESSAGE_TYPES = frozenset({"assistant"})
+V2_IGNORED_MESSAGE_TYPES = frozenset(
+    {"user", "system", "synthetic", "compaction", "idle", "model-switched"})
+V2_MESSAGE_FIELDS = frozenset(
+    {"time", "agent", "model", "content", "finish", "cost", "tokens"})
+V2_MODEL_FIELDS = frozenset({"id", "providerID", "variant"})
+V2_TOOL_ENTRY_TYPE = "tool"
+V2_TOOL_FIELDS = frozenset({"type", "id", "name", "state", "time"})
+V2_TOOL_STATE_FIELDS = frozenset(
+    {"status", "input", "metadata", "content", "error"})
+V2_TOOL_TIME_FIELDS = frozenset({"created", "ran", "completed"})
+# The v2 skill tool names its target in ``input.id``; v1 used ``input.name``.
+SKILL_ARG_FIELDS_V2 = frozenset({"id"})
+# v2 still emits ``task``; ``subagent`` is the name the host's own aliasing uses
+# in places, so both classify as the agent table.
+TASK_TOOLS = frozenset({"task", "subagent"})
 
 # ``session`` columns: id, project_id, directory, agent, model, parent_id, cost,
 # tokens_*, version, time_created, time_updated. ``title`` and ``slug`` exist and
@@ -240,7 +278,15 @@ MESSAGE_LOOKUP_CHUNK = 400
 
 # ``sync_state.name`` values.
 CURSOR_PART = "part"
+CURSOR_MESSAGE = "session_message"
 STATE_SESSIONS = "session"
+STATE_SESSIONS_V2 = "session_v2"
+# Which host layout the tracker's rows were built from. A change in either
+# direction wipes the indexed usage tables once, because v1 and v2 key the same
+# call differently (``prt_…`` vs ``call_…``) and mixing them would double-count.
+STATE_HOST_FORMAT = "host-format"
+FORMAT_V1 = 1
+FORMAT_V2 = 2
 # The plugin-usage sidecar (see ``ingest_plugin_events``). Its cursor is a byte
 # offset, not a rowid: the file is not OpenCode's, it is one this project owns.
 STATE_PLUGIN_EVENTS = "plugin-events"
@@ -262,6 +308,7 @@ NO_SKILL_NAME = "skill_call_without_name"
 NO_TASK_TYPE = "task_call_without_subagent_type"
 MESSAGE_ROW_ABSENT = "step_finish_message_row_absent"
 UNKNOWN_PART_TYPE = "unknown_part_type"
+UNKNOWN_MESSAGE_TYPE = "unknown_message_type"
 HELD_GAVE_UP = "part_left_running"
 
 # The reasons this build *expects* on a healthy host, as opposed to the ones that
@@ -416,7 +463,7 @@ def classify(name: str, servers: tuple[str, ...]) -> tuple[str, str | None, str 
     """
     if name == SKILL_TOOL:
         return "skill", None, None
-    if name == TASK_TOOL:
+    if name in TASK_TOOLS:
         return "agent", None, None
     owned = split_mcp(name, servers)
     if owned:
@@ -426,13 +473,18 @@ def classify(name: str, servers: tuple[str, ...]) -> tuple[str, str | None, str 
 
 # --- writers ---------------------------------------------------------------
 
-def write_model_call(conn, part, data: dict, ctx: dict | None, counts: Counts) -> None:
+def write_model_call(conn, part, data: dict, ctx: dict | None, counts: Counts,
+                     total_expected: bool = True) -> None:
     """One ``step-finish`` part -> one row of ``model_calls``.
 
     ``ctx`` is the parent message's model context, or ``None`` when the message
     row is gone (pruned, or inserted after this part was consumed). The usage
     numbers are still the host's own and still get written — losing a token count
     because a label is missing would be the worse error — with the reason counted.
+
+    ``total_expected`` is False for v2, whose message payload has no host total:
+    the view derives it, so flagging every row as missing ``total`` would turn a
+    format difference into a permanent warning.
     """
     tokens = data.get("tokens")
     if not isinstance(tokens, dict):
@@ -440,8 +492,9 @@ def write_model_call(conn, part, data: dict, ctx: dict | None, counts: Counts) -
         return
     cache = tokens.get("cache")
     cache = cache if isinstance(cache, dict) else {}
-    missing = [f for f in USAGE_LEAF_FIELDS
-               if _token_value(tokens, cache, f) is None]
+    leaves = USAGE_LEAF_FIELDS if total_expected else tuple(
+        f for f in USAGE_LEAF_FIELDS if f != "total")
+    missing = [f for f in leaves if _token_value(tokens, cache, f) is None]
     present = any(_token_value(tokens, cache, f) is not None
                   for f in USAGE_PRESENT_FIELDS)
     conn.execute(
@@ -592,15 +645,22 @@ def message_context(src, message_ids: set[str], counts: Counts) -> dict[str, dic
 
 # --- sessions --------------------------------------------------------------
 
-def index_sessions(conn, src, counts: Counts) -> None:
-    """Re-read the host's ``session`` table in full and upsert it.
+def index_sessions(conn, src, counts: Counts, table: str = TABLE_SESSION,
+                   state: str = STATE_SESSIONS) -> dict[str, dict]:
+    """Re-read the host's session table in full and upsert it.
 
     Not a cursor read: see cursor rule 4. The projection names every column so a
     host column that starts carrying text cannot be picked up by a ``SELECT *``.
+    v2 renamed the table (``session_v2``) but kept the columns, so one reader
+    serves both; ``state`` keeps their row counts apart.
+
+    Returns ``session id -> {project, directory}`` for the message reader, which
+    would otherwise join this table once per batch.
     """
     rows = src.execute(
-        "SELECT " + ", ".join(SESSION_COLUMNS) + " FROM " + TABLE_SESSION).fetchall()
-    host_count, host_max = host_stats(src, TABLE_SESSION)
+        "SELECT " + ", ".join(SESSION_COLUMNS) + " FROM " + table).fetchall()
+    host_count, host_max = host_stats(src, table)
+    meta: dict[str, dict] = {}
     for row in rows:
         model = _session_model(row["model"])
         parent = row["parent_id"]
@@ -617,14 +677,17 @@ def index_sessions(conn, src, counts: Counts) -> None:
              _int_or_none(row["tokens_cache_read"]),
              _int_or_none(row["tokens_cache_write"]), row["version"]),
         )
+        meta[row["id"]] = {"project": row["project_id"],
+                           "directory": row["directory"]}
         counts.sessions += 1
     previous = conn.execute(
-        "SELECT host_count FROM sync_state WHERE name=?", (STATE_SESSIONS,)).fetchone()
+        "SELECT host_count FROM sync_state WHERE name=?", (state,)).fetchone()
     note = ""
     if previous and previous[0] is not None and host_count < previous[0]:
         note = f"host sessions pruned: {previous[0]} -> {host_count}"
-    remember_state(conn, STATE_SESSIONS, host_max, host_count, host_max,
+    remember_state(conn, state, host_max, host_count, host_max,
                    note or "full reload each run (host rewrites these rows)")
+    return meta
 
 
 def _session_model(raw) -> dict:
@@ -724,6 +787,206 @@ def index_parts(conn, src, counts: Counts, servers: tuple[str, ...]) -> None:
         note = (note + "; " if note else "") + \
             f"{STATUS_RUNNING} part held at rowid {hold_at} for the next run"
     remember_state(conn, CURSOR_PART, cursor, host_count, host_max, note)
+
+
+# --- v2 messages -----------------------------------------------------------
+
+def table_exists(src, name: str) -> bool:
+    row = src.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
+    ).fetchone()
+    return row is not None
+
+
+def host_format(src) -> str:
+    """``"v2"`` when the host has both v2 tables, else ``"v1"``.
+
+    Both are required: ``session_message`` without ``session_v2`` would leave the
+    session labels unresolvable, and reading v1 in that state is the safer answer.
+    """
+    if table_exists(src, TABLE_MESSAGE_V2) and table_exists(src, TABLE_SESSION_V2):
+        return "v2"
+    return "v1"
+
+
+def format_marker(conn) -> int:
+    return cursor_of(conn, STATE_HOST_FORMAT)
+
+
+def _v2_tool_state(item: dict) -> dict:
+    """One v2 ``content[]`` tool entry -> the v1 ``state`` shape the writer reads.
+
+    Only the registered fields survive the projection: ``content`` (the tool's
+    output) and ``error`` (its error text) are dropped here, not stored and
+    filtered later. ``ran`` is when the tool actually started, so it is preferred
+    over ``created`` for a duration that matches v1's ``start``/``end``.
+    """
+    state = item.get("state")
+    state = state if isinstance(state, dict) else {}
+    when = item.get("time")
+    when = when if isinstance(when, dict) else {}
+    args = state.get("input")
+    args = dict(args) if isinstance(args, dict) else {}
+    if item.get("name") == SKILL_TOOL and "name" not in args:
+        # v2 names the skill in `id`; the shared writer keys skill_usage on `name`.
+        skill = args.get("id")
+        if isinstance(skill, str) and skill:
+            args["name"] = skill
+    start = when.get("ran", when.get("created"))
+    return {
+        "status": state.get("status"),
+        "input": args,
+        "time": {"start": start, "end": when.get("completed")},
+        "metadata": state.get("metadata"),
+    }
+
+
+def write_tool_entry_v2(conn, row, item: dict, ctx: dict | None,
+                        servers: tuple[str, ...], counts: Counts) -> bool:
+    """One v2 tool entry -> ``tool_calls`` and its specialised table.
+
+    Returns False when the call is not final and the cursor must hold.
+    """
+    name = item.get("name")
+    if not isinstance(name, str) or not name:
+        counts.bump(NO_TOOL_NAME)
+        return True
+    call_id = item.get("id")
+    if not isinstance(call_id, str) or not call_id:
+        counts.bump(NO_TOOL_NAME)
+        return True
+    when = item.get("time")
+    when = when if isinstance(when, dict) else {}
+    part = {
+        "id": call_id,
+        "session_id": row["session_id"],
+        "time_created": when.get("created") or row["time_created"],
+    }
+    data = {"tool": name, "state": _v2_tool_state(item)}
+    return write_tool_call(conn, part, data, ctx, servers, counts)
+
+
+def write_model_call_v2(conn, row, data: dict, ctx: dict | None,
+                        counts: Counts) -> bool:
+    """One assistant message -> one ``model_calls`` row.
+
+    The v1 writer is reused by projecting the message into its step shape. A
+    message without ``tokens`` is still streaming (or was aborted before usage);
+    the caller holds the cursor only in the former case.
+    """
+    tokens = data.get("tokens")
+    if not isinstance(tokens, dict):
+        return False
+    when = data.get("time")
+    when = when if isinstance(when, dict) else {}
+    part = {
+        "id": row["id"],
+        "message_id": row["id"],
+        "session_id": row["session_id"],
+        "time_created": when.get("created") or row["time_created"],
+    }
+    step = {"tokens": tokens, "cost": data.get("cost"), "reason": data.get("finish")}
+    write_model_call(conn, part, step, ctx, counts, total_expected=False)
+    return True
+
+
+def index_messages_v2(conn, src, counts: Counts, servers: tuple[str, ...],
+                      session_meta: dict[str, dict]) -> None:
+    """Append-read ``session_message`` by rowid, with the v2 holdback.
+
+    v2 updates an assistant row in place while it streams: ``tokens`` and
+    ``time.completed`` appear only when the model turn is done, and a tool
+    entry's ``state.status`` moves from ``running`` to ``completed``. A rowid
+    cursor alone would index the first version and never look again, so the
+    cursor stops at the earliest row that is not settled and the next run
+    re-reads it. Writes are ``INSERT OR REPLACE`` on the host's own ids, so the
+    final version wins. The cap is the same as v1's: a row that never settles is
+    written as it stands, counted, and passed.
+    """
+    cursor = cursor_of(conn, CURSOR_MESSAGE)
+    host_count, host_max = host_stats(src, TABLE_MESSAGE_V2)
+    note = ""
+    if cursor and host_max < cursor:
+        note = (f"host {TABLE_MESSAGE_V2} renumbered "
+                f"(max rowid {host_max} < cursor {cursor})")
+        cursor = 0
+    previous = conn.execute(
+        "SELECT host_count FROM sync_state WHERE name=?", (CURSOR_MESSAGE,)).fetchone()
+    if previous and previous[0] is not None and host_count < previous[0]:
+        note = (note + "; " if note else "") + \
+            f"host messages pruned: {previous[0]} -> {host_count} (tracker rows kept)"
+
+    hold_at = None
+    while True:
+        rows = src.execute(
+            "SELECT rowid, id, session_id, type, time_created, data"
+            f" FROM {TABLE_MESSAGE_V2} WHERE rowid > ? ORDER BY rowid LIMIT ?",
+            (cursor, PART_BATCH_ROWS)).fetchall()
+        if not rows:
+            break
+        for row in rows:
+            counts.parts += 1
+            try:
+                data = json.loads(row["data"])
+            except (TypeError, ValueError):
+                counts.bump(UNPARSEABLE_DATA)
+                continue
+            if not isinstance(data, dict):
+                counts.bump(UNPARSEABLE_DATA)
+                continue
+            mtype = row["type"] or data.get(V2_MESSAGE_TYPE_FIELD)
+            if mtype != "assistant":
+                if mtype not in V2_IGNORED_MESSAGE_TYPES:
+                    counts.bump(f"{UNKNOWN_MESSAGE_TYPE}:{mtype}")
+                continue
+
+            meta = session_meta.get(row["session_id"]) or {}
+            model = data.get("model")
+            model = model if isinstance(model, dict) else {}
+            ctx = {
+                "project": meta.get("project"),
+                "directory": meta.get("directory"),
+                "agent": data.get("agent"),
+                "model": model.get("id"),
+                "provider": model.get("providerID"),
+                "variant": model.get("variant"),
+            }
+
+            settled = True
+            when = data.get("time")
+            when = when if isinstance(when, dict) else {}
+            if isinstance(data.get("tokens"), dict):
+                write_model_call_v2(conn, row, data, ctx, counts)
+            elif not when.get("completed"):
+                # Still streaming: the usage numbers have not been written yet.
+                settled = False
+
+            content = data.get("content")
+            if isinstance(content, list):
+                for item in content:
+                    if not isinstance(item, dict):
+                        continue
+                    if item.get("type") != V2_TOOL_ENTRY_TYPE:
+                        continue
+                    if not write_tool_entry_v2(conn, row, item, ctx, servers, counts):
+                        settled = False
+            elif content is not None:
+                counts.bump(UNPARSEABLE_MESSAGE)
+
+            if not settled:
+                hold_at = row["rowid"] if hold_at is None else min(hold_at, row["rowid"])
+
+        cursor = rows[-1]["rowid"]
+        conn.commit()
+
+    if hold_at is not None and host_max - hold_at > MAX_HELD_ROWS:
+        counts.bump(HELD_GAVE_UP)
+        hold_at = None
+    if hold_at is not None:
+        cursor = hold_at - 1
+        note = (note + "; " if note else "") + \
+            f"unsettled message held at rowid {hold_at} for the next run"
+    remember_state(conn, CURSOR_MESSAGE, cursor, host_count, host_max, note)
 
 
 # --- inventory -------------------------------------------------------------
@@ -1110,8 +1373,26 @@ def format_doc() -> str:
 
     return "".join([
         f"- **Host database**: `{db.HOST_DB}` (opened `mode=ro`, never written)\n",
-        f"- **Host tables read**: `{TABLE_SESSION}`, `{TABLE_MESSAGE}`, "
+        f"- **Host tables read (v1)**: `{TABLE_SESSION}`, `{TABLE_MESSAGE}`, "
         f"`{TABLE_PART}`\n",
+        f"- **Host tables read (v2, preferred when present)**: "
+        f"`{TABLE_SESSION_V2}`, `{TABLE_MESSAGE_V2}` — v1 is not read at all in "
+        f"that layout, because the same history would be indexed twice under "
+        f"different call ids\n",
+        row("v2 message types that produce rows", V2_HANDLED_MESSAGE_TYPES),
+        row("v2 message types known and deliberately not recorded",
+            V2_IGNORED_MESSAGE_TYPES),
+        f"- **v2 message fields**: "
+        f"{', '.join(f'`{f}`' for f in sorted(V2_MESSAGE_FIELDS))}; "
+        f"`content[].state.content` (tool output) and `state.error` are named "
+        f"and never read\n",
+        f"- **v2 tool entry fields**: "
+        f"{', '.join(f'`{f}`' for f in sorted(V2_TOOL_FIELDS))} + state "
+        f"{', '.join(f'`{f}`' for f in sorted(V2_TOOL_STATE_FIELDS))} + time "
+        f"{', '.join(f'`{f}`' for f in sorted(V2_TOOL_TIME_FIELDS))}\n",
+        f"- **v2 model fields**: "
+        f"{', '.join(f'`{f}`' for f in sorted(V2_MODEL_FIELDS))}\n",
+        row("v2 tool argument names read", SKILL_ARG_FIELDS_V2),
         row("Part types that produce rows", HANDLED_PART_TYPES),
         row("Part types known and deliberately not recorded", IGNORED_PART_TYPES),
         f"- **Tool part fields**: `{TOOL_NAME_FIELD}` + state "
@@ -1124,7 +1405,7 @@ def format_doc() -> str:
         f"(non-final `{STATUS_RUNNING}` holds the cursor)\n",
         row("Tool argument names read", SKILL_ARG_FIELDS | TASK_ARG_FIELDS),
         f"- **Specialising tool names**: `{SKILL_TOOL}` -> skill_usage, "
-        f"`{TASK_TOOL}` -> agent_usage\n",
+        f"{', '.join(f'`{t}`' for t in sorted(TASK_TOOLS))} -> agent_usage\n",
         f"- **MCP name shape**: `<server>{MCP_TOOL_SEP}<tool>`, resolved against "
         f"the `{CONFIG_FILE}` `mcp` keys, longest prefix first. A name no "
         f"configured server owns stays `builtin` and is NOT counted as drift "
@@ -1183,7 +1464,9 @@ def format_doc() -> str:
         f"first non-final tool part (cap `{MAX_HELD_ROWS}` rows), batch "
         f"`{PART_BATCH_ROWS}` rows, message lookups in chunks of "
         f"`{MESSAGE_LOOKUP_CHUNK}`; `{TABLE_SESSION}` re-read in full each run "
-        f"(the host rewrites its rollup)\n",
+        f"(the host rewrites its rollup). In v2, `{TABLE_MESSAGE_V2}` is read by "
+        f"rowid with a holdback at the first message that is still streaming or "
+        f"has a non-final tool entry, and `{TABLE_SESSION_V2}` is re-read in full\n",
         f"- **Plugin-usage sidecar**: `{db.PLUGIN_EVENTS}` — append-only JSONL, read "
         f"by byte offset (`{STATE_PLUGIN_EVENTS}`); record types "
         f"`{EVENT_SURFACE}` (a plugin's tool/command ids), `{EVENT_CALL}` (one "
@@ -1192,8 +1475,9 @@ def format_doc() -> str:
         + ", ".join(f"`{r}`" for r in (
             UNPARSEABLE_DATA, UNPARSEABLE_MESSAGE, NO_TOKENS, NO_TOOL_NAME,
             NO_SKILL_NAME, NO_TASK_TYPE, MESSAGE_ROW_ABSENT, UNKNOWN_PART_TYPE,
-            HELD_GAVE_UP, UNPARSEABLE_EVENT))
-        + f", and per name for `{UNKNOWN_PART_TYPE}:<type>`\n",
+            UNKNOWN_MESSAGE_TYPE, HELD_GAVE_UP, UNPARSEABLE_EVENT))
+        + f", and per name for `{UNKNOWN_PART_TYPE}:<type>` / "
+        f"`{UNKNOWN_MESSAGE_TYPE}:<type>`\n",
     ])
 
 
@@ -1249,21 +1533,38 @@ def run(full: bool = False, quiet: bool = False, db_path=db.DB_PATH,
 def _run(conn, src, status: str, quiet: bool = False, host_config=None,
          plugin_events=None, home=None) -> dict:
     counts = Counts()
+    fmt = host_format(src)
+    marker = FORMAT_V2 if fmt == "v2" else FORMAT_V1
+    # One rebuild on a layout change. v1 and v2 key the same call differently
+    # (``prt_…`` vs ``call_…``), so keeping both would double-count the history
+    # the host migrated. The reset also clears the sidecar cursor and the
+    # inventory; both are re-derived below.
+    if format_marker(conn) != marker:
+        db.reset(conn)
+        conn.commit()
     inventory = scan_inventory(conn, host_config, home)
     # After scan_inventory: that DELETEs `inventory`, and this re-applies the hook's
     # tool/command surfaces into it.
     plugin = ingest_plugin_events(conn, counts, plugin_events)
     servers = mcp_servers(host_config)
     conn.commit()
-    index_sessions(conn, src, counts)
-    conn.commit()
-    index_parts(conn, src, counts, servers)
+    if fmt == "v2":
+        session_meta = index_sessions(conn, src, counts, TABLE_SESSION_V2,
+                                      STATE_SESSIONS_V2)
+        conn.commit()
+        index_messages_v2(conn, src, counts, servers, session_meta)
+    else:
+        index_sessions(conn, src, counts)
+        conn.commit()
+        index_parts(conn, src, counts, servers)
+    remember_state(conn, STATE_HOST_FORMAT, marker, 0, 0, fmt)
     n_unparsed = counts.flush(conn)
     conn.commit()
 
     stats = {
         "ok": True,
         "schema": status,
+        "host_format": fmt,
         "host_db": str(src.execute("PRAGMA database_list").fetchone()[2]),
         "parts_read": counts.parts,
         "tool_calls": counts.calls,
@@ -1275,7 +1576,7 @@ def _run(conn, src, status: str, quiet: bool = False, host_config=None,
         "sessions": counts.sessions,
         "inventory": inventory,
         "plugin_events": plugin,
-        "cursor": cursor_of(conn, CURSOR_PART),
+        "cursor": cursor_of(conn, CURSOR_MESSAGE if fmt == "v2" else CURSOR_PART),
         # Per-run and cumulative: a format change moves both, while an old
         # unaddressed count only shows in the total.
         "unparsed_this_run": n_unparsed,
@@ -1307,7 +1608,7 @@ def _run(conn, src, status: str, quiet: bool = False, host_config=None,
         print(f"  UNPARSED {stats['unparsed_this_run']} records this run "
               f"({stats['unparsed']} total, {reasons}) — ocut health lists them")
     if not quiet:
-        print(f"host {stats['host_db']}")
+        print(f"host {stats['host_db']} (format {stats['host_format']})")
         print(f"  parts_read={stats['parts_read']}  cursor={stats['cursor']}")
         print(f"  tool_calls={stats['rows_tool_calls']}  "
               f"model_calls={stats['rows_model_calls']}  "

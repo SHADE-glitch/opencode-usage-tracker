@@ -77,10 +77,12 @@ def records(sidecar: Path) -> list[dict]:
 
 @requires_bun
 def test_default_export_is_the_loader_contract_and_nothing_else(tmp_path):
-    """`default` must be `{ id, server }` and no other export may be a function.
+    """`default` must carry both entry points, and no other export may be a function.
 
     OpenCode calls every exported function as a plugin factory; a named export here
-    would be invoked with the wrong `input`. The contract is what keeps the hook from
+    would be invoked with the wrong `input`. v1 calls `server`; v2 requires `setup`
+    (the 2.0.32 loader rejects a default without `setup` or `effect`, which is why
+    the hook silently stopped recording). The contract is what keeps the hook from
     being loaded twice or crashing the host's own plugin load.
     """
     cfg = fixture_cfg(tmp_path)
@@ -88,7 +90,8 @@ def test_default_export_is_the_loader_contract_and_nothing_else(tmp_path):
     r = run_bun(
         "const m = await import(process.env.PLUGIN_PATH);"
         "const d = m.default;"
-        "if (!d || typeof d !== 'object' || typeof d.server !== 'function')"
+        "if (!d || typeof d !== 'object'"
+        " || typeof d.server !== 'function' || typeof d.setup !== 'function')"
         " { console.log('FAIL'); process.exit(1); }"
         "console.log(JSON.stringify({ id: d.id, exports: Object.keys(m).sort() }));",
         env)
@@ -125,6 +128,49 @@ def test_the_hook_records_a_surface_and_only_plugin_owned_calls(tmp_path):
     assert {(c["kind"], c["item"]) for c in calls} == {
         ("tool", "compress"), ("command", "dcp-compress")}, calls
     assert all(c["plugin"].endswith("demo.js") for c in calls), calls
+
+
+@requires_bun
+def test_the_v2_setup_records_a_tool_call_and_a_command(tmp_path):
+    """The v2 entry point (`setup`) must record the same rows as `server`.
+
+    OpenCode 2.0.32 no longer calls `server`; it calls `setup(ctx)` and registers
+    tool hooks through `ctx.tool.hook`. A command has no hook, so it is read from
+    the `command.executed` event. The event names the host call id `id` (v1 used
+    `callID`) and reports the outcome as `status`.
+    """
+    cfg = fixture_cfg(tmp_path)
+    sidecar, env = env_for(tmp_path, cfg)
+    r = run_bun(
+        "const m = await import(process.env.PLUGIN_PATH);"
+        "const hooks = {};"
+        "const ctx = {"
+        "  location: { directory: process.env.OCUT_OPENCODE_CONFIG },"
+        "  tool: { hook: async (name, cb) => { hooks[name] = cb;"
+        "    return { dispose: async () => {} }; } },"
+        "  event: { subscribe: async function* () {"
+        "    yield { type: 'command.executed', data: {"
+        "      name: 'dcp-compress', sessionID: 's1', arguments: '', messageID: 'm1' } }; } },"
+        "};"
+        "const cleanup = await m.default.setup(ctx);"
+        "await hooks['execute.before']({ tool: 'compress', sessionID: 's1', id: 'c1',"
+        "  agent: 'build', messageID: 'm1', input: {} });"
+        "await hooks['execute.after']({ tool: 'compress', sessionID: 's1', id: 'c1',"
+        "  agent: 'build', messageID: 'm1', input: {}, status: 'completed', result: {} });"
+        "await cleanup();"
+        "console.log('OK');",
+        env)
+    assert r.returncode == 0, r.stdout + r.stderr
+    recs = records(sidecar)
+    calls = [x for x in recs if x["t"] == "call"]
+    by_kind = {c["kind"]: c for c in calls}
+    assert set(by_kind) == {"tool", "command"}, calls
+    assert by_kind["tool"]["item"] == "compress", calls
+    assert by_kind["tool"]["cid"] == "c1", calls
+    assert by_kind["tool"]["status"] == "completed", calls
+    assert isinstance(by_kind["tool"]["ms"], int), calls
+    assert by_kind["command"]["item"] == "dcp-compress", calls
+    assert by_kind["command"]["cid"] == "cmd:s1:m1", calls
 
 
 @requires_bun

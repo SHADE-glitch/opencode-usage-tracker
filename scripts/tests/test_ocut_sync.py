@@ -159,6 +159,86 @@ def add_ignored(conn, pid, mid, sid, ptype="text"):
                  (pid, mid, sid, 1_700_000_300_000, json.dumps(data)))
 
 
+# --- v2 host ---------------------------------------------------------------
+
+def make_host_v2(path: Path) -> sqlite3.Connection:
+    """Create a v2 host: ``session_v2`` + ``session_message``, no v1 tables."""
+    conn = sqlite3.connect(path)
+    conn.executescript("""
+    CREATE TABLE session_v2 (
+        id TEXT PRIMARY KEY, project_id TEXT, workspace_id TEXT, parent_id TEXT,
+        fork_session_id TEXT, fork_boundary TEXT, slug TEXT, directory TEXT,
+        path TEXT, title TEXT, version TEXT, share_url TEXT,
+        summary_additions INTEGER, summary_deletions INTEGER,
+        summary_files INTEGER, summary_diffs TEXT, metadata TEXT,
+        cost REAL, tokens_input INTEGER, tokens_output INTEGER,
+        tokens_reasoning INTEGER, tokens_cache_read INTEGER,
+        tokens_cache_write INTEGER, revert TEXT, permission TEXT, agent TEXT,
+        model TEXT, time_created INTEGER, time_updated INTEGER,
+        time_compacting INTEGER, time_archived INTEGER, time_suspended INTEGER,
+        resume_attempts INTEGER, time_idle INTEGER, time_viewed INTEGER,
+        idle_outcome TEXT
+    );
+    CREATE TABLE session_message (
+        id TEXT PRIMARY KEY, session_id TEXT, type TEXT, seq INTEGER,
+        time_created INTEGER, time_updated INTEGER, data TEXT
+    );
+    """)
+    return conn
+
+
+def add_session_v2(conn, sid, *, model=None, agent="build", parent=None,
+                   started=1_700_000_000_000, ended=1_700_000_900_000,
+                   tokens=(0, 0, 0, 0, 0), cost=0.0, project="proj1",
+                   directory="/home/user/work"):
+    model = model or json.dumps({"id": "model-x", "providerID": "vendor",
+                                 "variant": "max"})
+    conn.execute(
+        "INSERT INTO session_v2(id, project_id, parent_id, slug, directory, path,"
+        " title, version, cost, tokens_input, tokens_output, tokens_reasoning,"
+        " tokens_cache_read, tokens_cache_write, agent, model, time_created,"
+        " time_updated) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (sid, project, parent, SENTINELS["slug"], directory, SENTINELS["path"],
+         SENTINELS["title"], "2.0.32", cost, *tokens, agent, model,
+         started, ended))
+
+
+def v2_tool(call_id, name, *, status="completed", created=1_700_000_200_000,
+            ran=None, completed=None, input=None, metadata=None):
+    """One ``content[]`` tool entry in the shape OpenCode v2 writes."""
+    when = {"created": created}
+    if ran is not None:
+        when["ran"] = ran
+    if completed is None and status in ("completed", "error"):
+        completed = created + 1000
+    if completed is not None:
+        when["completed"] = completed
+    state = {"status": status, "input": input or {}}
+    if metadata is not None:
+        state["metadata"] = metadata
+    return {"type": "tool", "id": call_id, "name": name, "state": state,
+            "time": when}
+
+
+def add_message_v2(conn, mid, sid, *, mtype="assistant",
+                   created=1_700_000_000_000, completed=None, tokens=None,
+                   content=None, agent="build", model="model-x",
+                   provider="vendor", variant="max", finish="tool-calls"):
+    data = {"time": {"created": created}, "agent": agent,
+            "model": {"id": model, "providerID": provider, "variant": variant},
+            "content": content or []}
+    if completed is not None:
+        data["time"]["completed"] = completed
+    if tokens is not None:
+        data["tokens"] = tokens
+    if mtype == "assistant":
+        data["finish"] = finish
+    conn.execute(
+        "INSERT INTO session_message(id, session_id, type, seq, time_created,"
+        " time_updated, data) VALUES(?,?,?,?,?,?,?)",
+        (mid, sid, mtype, 1, created, completed or created, json.dumps(data)))
+
+
 def make_config(root: Path, mcp=None, plugins=None, providers=None):
     """A config home with the directories and the JSON the reader scans."""
     (root / "agents").mkdir(parents=True, exist_ok=True)
@@ -215,6 +295,40 @@ def rows(tracker, table, where="1"):
         return [dict(r) for r in conn.execute(f"SELECT * FROM {table} WHERE {where}")]
     finally:
         conn.close()
+
+
+@pytest.fixture
+def host_v2(tmp_path):
+    """A v2 host: one session, one completed assistant message, four tools."""
+    path = tmp_path / "opencode.db"
+    conn = make_host_v2(path)
+    add_session_v2(conn, "ses_v2", tokens=(100, 20, 5, 800, 0), cost=0.25,
+                   started=1_700_000_000_000, ended=1_700_000_900_000)
+    add_message_v2(
+        conn, "msg_v2", "ses_v2", created=1_700_000_100_000,
+        completed=1_700_000_500_000,
+        tokens={"input": 100, "output": 20, "reasoning": 5,
+                "cache": {"read": 800, "write": 75}},
+        content=[
+            v2_tool("call_bash", "bash", input={"command": "echo hi"},
+                    metadata={"status": "completed", "exit": 0}),
+            v2_tool("call_skill", "skill", input={"id": "opencode"}),
+            v2_tool("call_task", "task", input={"subagent_type": "explore"},
+                    metadata={"sessionId": "ses_child"}),
+            v2_tool("call_mcp", "basic-memory_search_notes",
+                    input={"query": "x"}),
+        ])
+    conn.commit()
+    conn.close()
+    return path
+
+
+def run_v2(host, tracker, **kw):
+    cfg = kw.pop("host_config", None)
+    if cfg is None:
+        cfg = tracker.parent / "cfg"
+        make_config(cfg, mcp={"basic-memory": {}})
+    return sync.run(db_path=tracker, host_db=host, host_config=cfg, **kw)
 
 
 # --- the happy path --------------------------------------------------------
@@ -384,6 +498,125 @@ def test_a_child_session_is_flagged_and_its_parent_kept(host, tracker):
     assert by_id["ses_child"]["is_subagent"] == 1
     assert by_id["ses_child"]["parent_id"] == "ses_parent"
     assert by_id["ses_parent"]["is_subagent"] == 0
+
+
+# --- the v2 host -----------------------------------------------------------
+
+def test_a_v2_message_becomes_one_model_call(host_v2, tracker):
+    """The v2 message carries its own usage; there is no step-finish part."""
+    stats = run_v2(host_v2, tracker)
+    assert stats["host_format"] == "v2"
+    got = rows(tracker, "model_calls")
+    assert len(got) == 1
+    row = got[0]
+    assert row["call_id"] == "msg_v2" and row["message_id"] == "msg_v2"
+    assert (row["prompt_tokens"], row["completion_tokens"],
+            row["reasoning_tokens"], row["cache_read"], row["cache_write"]) == (
+                100, 20, 5, 800, 75)
+    # v2 has no host total; the view derives it from the five parts.
+    assert row["total_tokens"] is None
+    assert row["model"] == "model-x" and row["provider"] == "vendor"
+    assert row["variant"] == "max" and row["agent"] == "build"
+    assert row["finish"] == "tool-calls"
+    assert row["usage_available"] == 1 and row["missing"] is None
+    assert row["project"] == "proj1" and row["directory"] == "/home/user/work"
+
+
+def test_v2_tool_entries_fill_the_specialised_tables(host_v2, tracker):
+    run_v2(host_v2, tracker)
+    calls = {r["tool_name"]: r for r in rows(tracker, "tool_calls")}
+    assert set(calls) == {"bash", "skill", "task", "basic-memory_search_notes"}
+    assert all(r["status"] == "completed" for r in calls.values())
+    assert all(r["duration_ms"] == 1000 for r in calls.values())
+    # v2 names the skill in input.id, not input.name
+    assert [r["skill"] for r in rows(tracker, "skill_usage")] == ["opencode"]
+    task = rows(tracker, "agent_usage")[0]
+    assert task["agent_type"] == "explore"
+    assert task["child_session_id"] == "ses_child"
+    mcp = rows(tracker, "mcp_usage")[0]
+    assert (mcp["server"], mcp["tool"]) == ("basic-memory", "search_notes")
+
+
+def test_v2_sessions_come_from_session_v2(host_v2, tracker):
+    run_v2(host_v2, tracker)
+    row = rows(tracker, "sessions")[0]
+    assert row["session_id"] == "ses_v2"
+    assert row["host_version"] == "2.0.32"
+    assert row["model"] == "model-x" and row["provider"] == "vendor"
+
+
+def test_a_streaming_v2_message_is_held_until_it_completes(tmp_path, tracker):
+    """v2 updates the message row in place; the cursor must not pass it early."""
+    path = tmp_path / "opencode.db"
+    conn = make_host_v2(path)
+    add_session_v2(conn, "ses_v2")
+    add_message_v2(conn, "msg_run", "ses_v2", created=1_700_000_100_000,
+                   content=[v2_tool("call_run", "bash", status="running",
+                                    created=1_700_000_200_000,
+                                    input={"command": "sleep 1"})])
+    conn.commit()
+    conn.close()
+
+    first = run_v2(path, tracker)
+    assert first["cursor"] == 0          # held at rowid 1
+    assert rows(tracker, "model_calls") == []
+    assert rows(tracker, "tool_calls")[0]["status"] == "running"
+
+    # The host rewrites the same row when the turn finishes.
+    conn = sqlite3.connect(path)
+    data = json.loads(conn.execute(
+        "SELECT data FROM session_message WHERE id='msg_run'").fetchone()[0])
+    data["tokens"] = {"input": 10, "output": 2,
+                      "cache": {"read": 0, "write": 0}}
+    data["time"]["completed"] = 1_700_000_600_000
+    data["content"][0]["state"]["status"] = "completed"
+    data["content"][0]["time"]["completed"] = 1_700_000_500_000
+    conn.execute("UPDATE session_message SET data=?, time_updated=? WHERE id='msg_run'",
+                 (json.dumps(data), 1_700_000_600_000))
+    conn.commit()
+    conn.close()
+
+    second = run_v2(path, tracker)
+    assert second["cursor"] == 1
+    assert len(rows(tracker, "model_calls")) == 1
+    tool = rows(tracker, "tool_calls")[0]
+    assert tool["status"] == "completed"
+    assert tool["duration_ms"] == 300_000
+
+
+def test_a_v1_to_v2_cutover_rebuilds_instead_of_double_counting(host, tracker):
+    """The two layouts key the same call differently; a cutover must wipe once."""
+    run(host, tracker)
+    assert len(rows(tracker, "tool_calls")) == 1
+
+    Path(host).unlink()
+    conn = make_host_v2(host)
+    add_session_v2(conn, "ses_v2")
+    add_message_v2(conn, "msg_v2", "ses_v2", created=1_700_000_100_000,
+                   completed=1_700_000_500_000,
+                   tokens={"input": 1, "output": 1},
+                   content=[v2_tool("call_a", "read"),
+                            v2_tool("call_b", "edit")])
+    conn.commit()
+    conn.close()
+
+    stats = run_v2(host, tracker)
+    assert stats["host_format"] == "v2"
+    got = rows(tracker, "tool_calls")
+    assert {r["call_id"] for r in got} == {"call_a", "call_b"}
+    assert len(rows(tracker, "model_calls")) == 1
+
+
+def test_an_unknown_v2_message_type_is_counted(tmp_path, tracker):
+    path = tmp_path / "opencode.db"
+    conn = make_host_v2(path)
+    add_session_v2(conn, "ses_v2")
+    add_message_v2(conn, "msg_odd", "ses_v2", mtype="mystery")
+    conn.commit()
+    conn.close()
+    run_v2(path, tracker)
+    reasons = {r["reason"] for r in rows(tracker, "unparsed")}
+    assert "unknown_message_type:mystery" in reasons
 
 
 # --- cursors, idempotency and the mutating row -----------------------------
@@ -1247,6 +1480,11 @@ def test_format_doc_names_every_registered_field():
         assert f"`{field}`" in doc
     for name in sorted(sync.HANDLED_PART_TYPES | sync.IGNORED_PART_TYPES):
         assert f"`{name}`" in doc
+    for name in sorted(sync.V2_HANDLED_MESSAGE_TYPES | sync.V2_IGNORED_MESSAGE_TYPES):
+        assert f"`{name}`" in doc
+    for field in sync.V2_TOOL_STATE_FIELDS:
+        assert f"`{field}`" in doc
+    assert sync.TABLE_MESSAGE_V2 in doc and sync.TABLE_SESSION_V2 in doc
     for value in ("output", "title", "metadata", "error"):
         assert f"`{value}`" in doc
     assert str(sync.MAX_HELD_ROWS) in doc
@@ -1287,6 +1525,10 @@ def test_every_registered_tool_field_is_either_read_or_refused():
         assert f'"{field}"' in source, field
     for field in sync.MESSAGE_MODEL_FIELDS:
         assert f'"{field}"' in source, field
+    for field in (sync.V2_MESSAGE_FIELDS | sync.V2_MODEL_FIELDS
+                  | sync.V2_TOOL_FIELDS | sync.V2_TOOL_STATE_FIELDS
+                  | sync.V2_TOOL_TIME_FIELDS | sync.SKILL_ARG_FIELDS_V2):
+        assert f'"{field}"' in source, field
 
 
 def test_the_status_vocabulary_is_the_hosts_and_not_a_translation():
@@ -1316,6 +1558,7 @@ def test_a_holdback_deadline_is_expected_and_every_loss_is_not():
     """
     assert sync.unparsed_is_expected(sync.HELD_GAVE_UP)
     for reason in (f"{sync.UNKNOWN_PART_TYPE}:brand-new-thing",
+                   f"{sync.UNKNOWN_MESSAGE_TYPE}:brand-new-thing",
                    sync.UNPARSEABLE_DATA, sync.UNPARSEABLE_MESSAGE,
                    sync.UNPARSEABLE_EVENT, sync.NO_TOKENS, sync.NO_TOOL_NAME,
                    sync.NO_SKILL_NAME, sync.NO_TASK_TYPE,

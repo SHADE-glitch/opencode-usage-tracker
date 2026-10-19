@@ -67,7 +67,7 @@ ocut health
 | OpenCode 自己的数据库与配置**从不被写**。宿主库以 `mode=ro` 打开并设 `PRAGMA query_only = ON`；本项目只写 tracker 自己的库。 | `scripts/tests/test_ocut_sync.py`、`test_the_host_database_is_never_opened_for_writing`、`test_open_source_refuses_to_create_a_host` |
 | 消息与工具的**散文从不被读**，因此从不被存。`tool` part 的 `output`/`title`/`metadata`/`error`、`text`/`reasoning` 正文、会话 `title` 都不被点名。 | `scripts/tests/test_ocut_sync.py`、`test_no_prose_field_is_copied_out_of_the_host` |
 | hook `plugin/ocut-hook.js` 是 `plugin_usage` 的**唯一写入方**，且从不打开 OpenCode 的数据库。 | `scripts/tests/test_ocut_hook.py`、`test_the_hook_records_a_surface_and_only_plugin_owned_calls` |
-| hook 只以 `export default { id, server }` 暴露工厂。具名导出会让 OpenCode 把它当工厂调用，从而中断整个插件加载。 | `scripts/tests/test_ocut_hook.py`、`test_default_export_is_the_loader_contract_and_nothing_else` |
+| hook 只以 `export default { id, server, setup }` 暴露工厂。具名导出会让 OpenCode 把它当工厂调用，从而中断整个插件加载；v2 调 `setup`，没有 `setup` 的默认导出会被直接拒绝。 | `scripts/tests/test_ocut_hook.py`、`test_default_export_is_the_loader_contract_and_nothing_else` |
 | 两个 token 粒度——每步的 `model_calls` 与宿主的按会话 rollup `sessions`——是同一测量的两个层级，**绝不相加**。 | `scripts/tests/test_ocut_sync.py`、`test_two_granularities_of_the_same_measurement_agree`；`scripts/tests/test_ocut_tui.py`、`test_no_panel_repeats_the_input_number_under_a_second_label` |
 | 读取器用不了的记录会被**计数**，绝不丢弃：未知 part 类型、解析不了的 JSON blob、解析不了的 sidecar 行，各自落进 `unparsed`。 | `scripts/tests/test_ocut_sync.py`、`test_a_json_blob_that_does_not_parse_is_counted_not_skipped`、`test_an_unknown_part_type_is_counted_per_type`、`test_an_unparseable_sidecar_line_is_counted_not_skipped` |
 | 改动 schema 或视图必须升 `SCHEMA_VERSION`，而升级会**清空同步游标**，好让新形状被重读而不是被信任。 | `scripts/tests/test_ocut_windows.py`、`test_a_version_bump_clears_the_cursors_so_nothing_is_read_again` |

@@ -2,7 +2,7 @@
 
 # 🎯 OpenCode usage tracker (`ocut`)
 
-![OpenCode](https://img.shields.io/badge/OpenCode-1.18.x-blue)
+![OpenCode](https://img.shields.io/badge/OpenCode-1.18.x%20%7C%202.x-blue)
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
 ![SQLite](https://img.shields.io/badge/storage-SQLite-003B57?logo=sqlite)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
@@ -34,13 +34,20 @@ message text.
 OpenCode already persists what you need — but in a shape built for resuming sessions,
 not for answering "which of my skills do I actually use?".
 
-- Every tool call is a `tool` part in `opencode.db`, whatever the tool is: a builtin,
-  the `skill` tool, the `task` tool that spawns a subagent, or an MCP server's tool.
-- Each model step is a `step-finish` part carrying that step's token counts and cost;
-  the model lives on its *parent message*, not on the step.
-- Sessions, their projects and their directories are rows in `session`.
+- Every tool call is a `tool` record in `opencode.db`, whatever the tool is: a builtin,
+  the `skill` tool, the `task`/`subagent` tool that spawns a subagent, or an MCP server's tool.
+- Each model step carries that step's token counts and cost — a `step-finish` part in
+  v1, the assistant message's own `tokens` object in v2; the model lives on the message.
+- Sessions, their projects and their directories are rows in `session` (v1) or
+  `session_v2` (v2).
 - What is *installed* — skills, agents, slash commands, MCP servers, plugins — lives in
   the config home (`~/.config/opencode`), not in the database.
+
+OpenCode v2 moved its message store from `part`/`message` to `session_message` and left
+the v1 tables frozen at the upgrade. `ocut` detects the layout and reads **one of them**,
+never both: the same call is keyed `prt_…` in v1 and `call_…` in v2, so indexing both
+would double-count the migrated history. The switch happens once, automatically, and
+rebuilds the tracker's usage tables from the v2 side.
 
 `ocut` reads all of that **read-only** and turns it into panels and reports. Two things
 it deliberately does *not* do:
@@ -48,11 +55,11 @@ it deliberately does *not* do:
 - **It never writes OpenCode's database or config.** The host database is opened
   `mode=ro` and `PRAGMA query_only = ON`, so a bug in this project cannot make that
   claim false.
-- **It never stores message or tool prose.** A tool part carries `output`, `title`,
-  `metadata` and `error`; a `text`/`reasoning` part carries your prompt and the model's
-  answer; a session row carries a `title` OpenCode derives from your first message.
-  None of those is read. Only identifiers, statuses, durations, token counts and counts
-  land in `usage.db`.
+- **It never stores message or tool prose.** A tool record carries `output`, `title`,
+  `metadata` and `error` (v2's tool entry keeps them under `state`); a `text`/`reasoning`
+  part carries your prompt and the model's answer; a session row carries a `title`
+  OpenCode derives from your first message. None of those is read. Only identifiers,
+  statuses, durations, token counts and counts land in `usage.db`.
 
 Design constraints, kept on purpose:
 
@@ -77,7 +84,7 @@ opens OpenCode's database.
 | | |
 |---|---|
 | OS | Linux — developed and verified on Ubuntu; other distributions are **unverified** |
-| OpenCode | 1.18.x — the host whose database and config this project reads (see [compatibility](docs/maintenance/compatibility.md)) |
+| OpenCode | 1.18.x and 2.x — the host whose database and config this project reads (see [compatibility](docs/maintenance/compatibility.md)) |
 | Python | 3.11+ for the CLI and TUI; CI runs the suite on **3.11 and 3.14** |
 | Textual | `textual>=8.2,<9` — needed by the interactive TUI only, installed into a venv by `install.sh` |
 | `uv` | optional but recommended for creating the venv; plain `python3 -m venv` also works |
@@ -231,15 +238,17 @@ ocut format  [--write]
 
 - `sync` — index OpenCode's database into the tracker's own. `--full` rebuilds from
   scratch (taking a snapshot first); `--quiet` is what the TUI's background worker runs.
-  It is incremental: a rowid cursor consumes new `part` rows, and `session` is re-read in
-  full each run because the host rewrites its rollup.
+  It is incremental: a rowid cursor consumes new host records (`part` in v1,
+  `session_message` in v2), and the session table is re-read in full each run because
+  the host rewrites its rollup.
 - `stats` — an overview of every category: sessions, projects, tool calls, skill / agent /
   MCP invocations, plugins and commands *installed*, model steps and tokens.
 - `tools` / `skills` / `agents` / `mcp` — one category's table. `plugins` is the
   installed ∪ used union, with the owning plugin's version and declared path.
-- `models` — per-model token totals from the host's own `step-finish` records, plus the
-  most recent steps. `Total` is the host's own step total when it sent one; cache
-  read/write are shown separately and are **not** inside it.
+- `models` — per-model token totals from the host's own per-step usage (`step-finish`
+  in v1, the assistant message's `tokens` in v2), plus the most recent steps. `Total`
+  is the host's own step total when it sent one; cache read/write are shown separately
+  and are **not** inside it.
 - `show <kind> <name>` — the recent calls for one entity. `recent` — the most recent tool
   calls of any kind. `inventory` — what is installed or available.
 - `export` — dump every view and table as JSON.
@@ -310,7 +319,8 @@ database; nothing is ever written back to OpenCode.
 
 ```
 OpenCode's own state (read-only — never opened for writing)
-  ~/.local/share/opencode/opencode.db    session · message · part
+  ~/.local/share/opencode/opencode.db    session · message · part  (v1)
+                                         session_v2 · session_message  (v2)
   ~/.config/opencode/                    installed skills · agents · commands · mcp · plugin
         │
         │  ocut sync   → scripts/ocut-sync.py   (opens the host with mode=ro)
@@ -326,10 +336,10 @@ OpenCode's own state (read-only — never opened for writing)
         ▲  written only by plugin/ocut-hook.js, ingested by ocut sync
 ```
 
-- **Source — read-only.** OpenCode's `opencode.db` (`session`, `message`, `part`) plus
-  the installed inventory under `~/.config/opencode`. The host database is opened
-  `mode=ro` with `PRAGMA query_only = ON`, and a missing file is an error, not an empty
-  success.
+- **Source — read-only.** OpenCode's `opencode.db` (`session`/`message`/`part` in v1,
+  `session_v2`/`session_message` in v2) plus the installed inventory under
+  `~/.config/opencode`. The host database is opened `mode=ro` with
+  `PRAGMA query_only = ON`, and a missing file is an error, not an empty success.
 - **Sync.** `ocut sync` copies what it needs into the tracker's own database; `--full`
   rebuilds it from scratch (after a snapshot).
 - **Store.** `~/.local/share/opencode-usage-tracker/usage.db` — the tracker's own SQLite,
@@ -343,16 +353,17 @@ Tables: `tool_calls`, `model_calls`, `skill_usage`, `agent_usage`, `mcp_usage`,
 `plugin_usage`, `plugin_surface`, `sessions`, `inventory`, `unparsed`, `sync_state`.
 Views: `v_tools`, `v_skills`, `v_agents`, `v_mcp`, `v_plugins`.
 
-- `tool_calls` — one row per `tool` part, whatever the tool is. `category` is
-  `builtin | skill | agent | mcp`; `status` is the host's own `state.status` verbatim.
+- `tool_calls` — one row per `tool` record, whatever the tool is (`part` in v1, a
+  `session_message` tool entry in v2). `category` is `builtin | skill | agent | mcp`;
+  `status` is the host's own `state.status` verbatim.
 - `skill_usage` — the `skill` tool's calls; the skill name is read from
   `state.input.name`, one of the only two argument names this project looks at.
-- `agent_usage` — the `task` tool's calls (a subagent was started), keyed by
+- `agent_usage` — the `task`/`subagent` tool's calls (a subagent was started), keyed by
   `state.input.subagent_type`.
 - `mcp_usage` — MCP tool calls, found by name (`<server>_<tool>`) and resolved against
   the servers the host's config lists, longest prefix first.
-- `model_calls` — one row per `step-finish` part; tokens and cost live here, the model
-  comes from the parent message.
+- `model_calls` — one row per model step (`step-finish` in v1, assistant message in
+  v2); tokens and cost live here, the model comes from the message.
 - `sessions` — one row per OpenCode session (including child sessions), with the host's
   own per-session rollup. `sessions` and `model_calls` are one measurement at two
   granularities and are **never added**.
@@ -439,7 +450,8 @@ The list below runs **M1–M17**. The Chinese README carries the same list with 
 detail in [§9](README.zh-CN.md#known-limitations).
 
 - **M1** OpenCode's own database is the **source of truth**. `ocut` can only see what the
-  host persisted; a call the host never wrote a `part` for is invisible, not misrecorded.
+  host persisted; a call the host never wrote (`part` in v1, a tool entry in
+  `session_message` in v2) is invisible, not misrecorded.
 - **M2** The host database and config are read-only and **never written** — opened
   `mode=ro` with `PRAGMA query_only = ON`. `ocut` therefore cannot repair or backfill the
   host, only index it.
@@ -459,10 +471,10 @@ detail in [§9](README.zh-CN.md#known-limitations).
 - **M6** When OpenCode's persisted format moves, the reader counts the record as
   `unparsed` instead of guessing. A jump in `ocut health`'s `UNPARSED` line after an
   upgrade means the format changed, not that you stopped using a tool.
-- **M7** No message body and no tool prose is ever stored. A part's `output`, `title`,
-  `metadata`, `error`, a `text`/`reasoning` body, and a session `title` are named nowhere
-  the reader reads them; only identifiers, statuses, durations and counts land in the
-  database.
+- **M7** No message body and no tool prose is ever stored. A tool record's `output`,
+  `title`, `metadata`, `error` (v1's part or v2's `state`), a `text`/`reasoning` body,
+  and a session `title` are named nowhere the reader reads them; only identifiers,
+  statuses, durations and counts land in the database.
 - **M8** The per-step `model_calls` and the host's per-session rollup `sessions` are one
   measurement at two granularities. They are shown beside each other and are **never added**.
 - **M9** MCP calls are attributed by name against the host's own config, resolved
@@ -496,13 +508,15 @@ detail in [§9](README.zh-CN.md#known-limitations).
   not appear as installed. Put shared skills in one of the two roots above and they
   will.
 - **M13** The Tokens and Usage lists show a `Cache miss` column and a `Usage Total`
-  even though the host publishes no such fields: a `step-finish` part carries only an
-  *uncached* `prompt_tokens` plus `tokens.cache.read` / `tokens.cache.write`. The labels
+  even though the host publishes no such fields: the host's usage record carries only an
+  *uncached* `prompt_tokens` plus `tokens.cache.read` / `tokens.cache.write` (v1's
+  `step-finish`, v2's assistant `tokens`). The labels
   mirror the sibling CodeBuddy tracker, so this is a **re-labelling**, not new
   measurements — `Cache miss` is the uncached input, `Cache hit` is the cache read,
   `Input` is all three added (the full prompt), and `Usage Total` is the display-only
   `Input + Output + cache hit`. `API Total` stays the host's own step total; read the
-  derived numbers beside it, never instead of it.
+  derived numbers beside it, never instead of it. v2 sends no step total, so
+  `total_tokens` is derived there and `total_tokens_source` says so.
 - **M14** The `state` column reads `installed` when there is **no evidence** to the
   contrary, and that is what it means on the Plugins tab. Usage there is written only by
   the optional hook (M3), so an installed plugin whose hook has recorded nothing carries

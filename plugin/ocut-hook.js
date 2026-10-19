@@ -23,8 +23,9 @@
 //
 // Loader contract (hard): OpenCode treats every exported function in a plugin
 // module as a plugin factory, and only stops when the default export is an
-// object carrying `server`. So this file exports its factory ONLY as
-// `export default { id, server }` and adds no named export.
+// object carrying the entry point it expects. So this file exports its factory
+// ONLY as `export default { id, server, setup }` and adds no named export:
+// v1 calls `server`, v2 calls `setup` (and ignores `server`).
 
 import fs from "node:fs";
 import path from "node:path";
@@ -347,10 +348,14 @@ function clip(value, max) {
   return typeof value === "string" ? value.slice(0, max) : null;
 }
 
-// --- the plugin ------------------------------------------------------------
+// --- the tracker -----------------------------------------------------------
+//
+// One implementation, two entry points. v1 (`server`) hands the returned object
+// to OpenCode as hooks; v2 (`setup`) registers the same handlers with
+// `ctx.tool.hook` and the event stream. Attribution is identical in both.
 
-async function ocutHookPlugin(input) {
-  if (DISABLED) return {};
+function createTracker(input) {
+  if (DISABLED) return null;
 
   const pluginDir = (input && (input.directory || input.worktree)) || null;
   const toolToPlugin = new Map();   // tool id     -> plugin name
@@ -392,71 +397,140 @@ async function ocutHookPlugin(input) {
     map.set(key, value);
   }
 
-  function callKey(sessionID, callID) {
-    return `${sessionID || ""}:${callID || ""}`;
+  // v1 names the host id `callID`, v2 names it `id`.
+  function callID(hookInput) {
+    return (hookInput && (hookInput.callID || hookInput.id)) || null;
+  }
+
+  function callKey(sessionID, id) {
+    return `${sessionID || ""}:${id || ""}`;
+  }
+
+  function toolBefore(hookInput) {
+    try {
+      if (!hookInput || typeof hookInput.tool !== "string") return;
+      if (!toolToPlugin.has(hookInput.tool)) return;
+      capKey(started, callKey(hookInput.sessionID, callID(hookInput)), Date.now());
+    } catch {
+      /* never throw */
+    }
+  }
+
+  function toolAfter(hookInput) {
+    try {
+      if (!hookInput || typeof hookInput.tool !== "string") return;
+      const plugin = toolToPlugin.get(hookInput.tool);
+      if (!plugin) return;
+      const key = callKey(hookInput.sessionID, callID(hookInput));
+      const startMs = started.get(key);
+      started.delete(key);
+      // v2 reports the outcome; v1 has no such field and records null.
+      const status = hookInput.status === "completed" || hookInput.status === "error"
+        ? hookInput.status
+        : null;
+      writeEvent({
+        t: "call",
+        ts: Date.now(),
+        sid: hookInput.sessionID || null,
+        cid: callID(hookInput),
+        plugin: clip(plugin, NAME_MAX),
+        kind: "tool",
+        item: clip(hookInput.tool, ITEM_MAX),
+        status,
+        ms: typeof startMs === "number" ? Date.now() - startMs : null,
+      });
+    } catch {
+      /* never throw */
+    }
+  }
+
+  // Plugin commands are namespaced by their plugin (conductor:status,
+  // dcp-compress). A command records no status and no duration; the call id is
+  // synthetic, because two invocations of the same command must stay two rows.
+  function recordCommand(name, sessionID, uniqueID) {
+    try {
+      if (typeof name !== "string" || !name) return;
+      const plugin = commandToPlugin.get(name);
+      if (!plugin) return;
+      const now = Date.now();
+      writeEvent({
+        t: "call",
+        ts: now,
+        sid: sessionID || null,
+        cid: `cmd:${sessionID || ""}:${uniqueID || now}`,
+        plugin: clip(plugin, NAME_MAX),
+        kind: "command",
+        item: clip(name, ITEM_MAX),
+        status: null,
+        ms: null,
+      });
+    } catch {
+      /* never throw */
+    }
   }
 
   return {
-    "tool.execute.before": async (hookInput) => {
-      try {
-        if (!hookInput || typeof hookInput.tool !== "string") return;
-        if (!toolToPlugin.has(hookInput.tool)) return;
-        capKey(started, callKey(hookInput.sessionID, hookInput.callID), Date.now());
-      } catch {
-        /* never throw */
-      }
+    toolBefore,
+    toolAfter,
+    // v1: `command.execute.before` carries the command id in `command`.
+    commandBefore(hookInput) {
+      if (!hookInput) return;
+      recordCommand(hookInput.command, hookInput.sessionID, null);
     },
-
-    "tool.execute.after": async (hookInput) => {
-      try {
-        if (!hookInput || typeof hookInput.tool !== "string") return;
-        const plugin = toolToPlugin.get(hookInput.tool);
-        if (!plugin) return;
-        const key = callKey(hookInput.sessionID, hookInput.callID);
-        const startMs = started.get(key);
-        started.delete(key);
-        writeEvent({
-          t: "call",
-          ts: Date.now(),
-          sid: hookInput.sessionID || null,
-          cid: hookInput.callID || null,
-          plugin: clip(plugin, NAME_MAX),
-          kind: "tool",
-          item: clip(hookInput.tool, ITEM_MAX),
-          status: null,
-          ms: typeof startMs === "number" ? Date.now() - startMs : null,
-        });
-      } catch {
-        /* never throw */
-      }
-    },
-
-    // Plugin commands are namespaced by their plugin (conductor:status,
-    // dcp-compress). There is no command.execute.after, so a command records no
-    // status; the call id is synthetic, because two invocations of the same
-    // command must stay two rows.
-    "command.execute.before": async (hookInput) => {
-      try {
-        if (!hookInput || typeof hookInput.command !== "string") return;
-        const plugin = commandToPlugin.get(hookInput.command);
-        if (!plugin) return;
-        const now = Date.now();
-        writeEvent({
-          t: "call",
-          ts: now,
-          sid: hookInput.sessionID || null,
-          cid: `cmd:${hookInput.sessionID || ""}:${now}`,
-          plugin: clip(plugin, NAME_MAX),
-          kind: "command",
-          item: clip(hookInput.command, ITEM_MAX),
-          status: null,
-          ms: null,
-        });
-      } catch {
-        /* never throw */
-      }
+    // v2: `command.executed` carries it in `data.name`, after the fact.
+    commandExecuted(data) {
+      if (!data) return;
+      recordCommand(data.name, data.sessionID, data.messageID);
     },
   };
 }
 
-export default { id: "ocut-hook", server: ocutHookPlugin };
+async function ocutHookPlugin(input) {
+  const tracker = createTracker(input);
+  if (!tracker) return {};
+  return {
+    "tool.execute.before": async (hookInput) => tracker.toolBefore(hookInput),
+    "tool.execute.after": async (hookInput) => tracker.toolAfter(hookInput),
+    "command.execute.before": async (hookInput) => tracker.commandBefore(hookInput),
+  };
+}
+
+// OpenCode v2 entry point. `setup` registers the same handlers through the v2
+// domains and returns the cleanup it expects on unload.
+async function ocutSetup(ctx) {
+  const tracker = createTracker({ directory: ctx.location && ctx.location.directory });
+  if (!tracker) return;
+
+  const registrations = [];
+  try {
+    registrations.push(await ctx.tool.hook("execute.before", (event) => tracker.toolBefore(event)));
+    registrations.push(await ctx.tool.hook("execute.after", (event) => tracker.toolAfter(event)));
+  } catch {
+    /* a host without these hooks records no tools; it must still load */
+  }
+
+  const controller = new AbortController();
+  const subscription = (async () => {
+    try {
+      for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
+        if (event && event.type === "command.executed") tracker.commandExecuted(event.data);
+      }
+    } catch {
+      /* aborted on unload, or the host has no event stream */
+    }
+  })();
+
+  return async () => {
+    controller.abort();
+    for (const registration of registrations) {
+      try {
+        await registration.dispose();
+      } catch {
+        /* dispose is idempotent */
+      }
+    }
+    await subscription;
+  };
+}
+
+export default { id: "ocut-hook", server: ocutHookPlugin, setup: ocutSetup };
