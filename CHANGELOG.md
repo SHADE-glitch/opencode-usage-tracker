@@ -1649,3 +1649,16 @@ Cost     The list is a hand-kept name set on both sides, and matching is by *sub
          wrong. And the exclusion is per machine, not per config: the reader drops the name
          everywhere, including projects that might have wanted it.
 Commit   851d0c6
+
+### D-080 · 2026-10-19 · chore
+
+Symptom  Three links under docs/maintenance/ used ../MAINTENANCE.md, one level short; the §9
+         links pointed at #-9-已知限制, an anchor the Chinese heading no longer produces;
+         AGENTS.md cited the standard by bare filename.
+Change   Links use ../../MAINTENANCE.md; the Chinese "已知限制" heading carries an explicit
+         <a name="known-limitations"> and all three links target #known-limitations; bare
+         standard references use the full path.
+Evidence 2026-10-19: every relative link under docs/ resolves; python3 -m pytest scripts/tests -q
+         338 passed + 3 subtests.
+Cost     One explicit anchor line in README.zh-CN.md; the anchor no longer depends on the emoji.
+Commit   c0170cc
