@@ -69,7 +69,7 @@ The reader and the hook read, in one place each: `OCUT_DB`, `OCUT_OPENCODE_DATA`
 `OCUT_HOOK_PACKAGES`, `OCUT_OPENCODE_CONFIG`, `HOME` (hook); `OCUT_SCRIPTS`,
 `OCUT_VENV` (the launcher); `OCUT_CONFIG_DIR`, `OCUT_BIN_DIR` (the installer). They are
 documented in README's environment table and in
-[`MAINTENANCE.md`](../MAINTENANCE.md) §0.
+[`MAINTENANCE.md`](../../MAINTENANCE.md) §0.
 
 ## 6. The hook export contract, because it is the one thing that can stop everything
 

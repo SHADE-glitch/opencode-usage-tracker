@@ -31,7 +31,7 @@ them with [`measurements.md`](measurements.md) before quoting any of it.
 
 Only the rows we have evidence for. An empty row is not "nothing changed", it is
 "nobody looked", so the honest action when a release lands is the recipe in
-[`MAINTENANCE.md`](../MAINTENANCE.md) §5, not a guess here.
+[`MAINTENANCE.md`](../../MAINTENANCE.md) §5, not a guess here.
 
 | OpenCode | What this project observed | Consequence we carry |
 |---|---|---|

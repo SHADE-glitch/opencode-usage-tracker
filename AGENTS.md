@@ -156,7 +156,7 @@ code; the schema version tracks the data. Never conflate them.
   managed snapshots and never touches a hand-made `usage.db.bak-*` copy. There is no systemd
   timer.
 - **Never commit runtime state or the working reports** — the ignore list and the process-draft
-  location are `STANDARD.md` §4 and §2; this repo adds `backups/` to the ignored set. Because
+  location are `~/.agents/standards/STANDARD.md` §4 and §2; this repo adds `backups/` to the ignored set. Because
   this repository is public and the drafts carry real paths and measured counts of a personal
   machine, both are provable: `git check-ignore -v docs/reports/STATE.md` must name the
   `.gitignore` line, and `git ls-files docs/reports` must print nothing.
@@ -230,7 +230,7 @@ selector that quietly deselects is worse than no selector, because it is run and
 
 ## Recording conventions
 
-Common CHANGELOG rules: `STANDARD.md` §3.
+Common CHANGELOG rules: `~/.agents/standards/STANDARD.md` §3.
 
 - The `feat` exclusion lives in `scripts/tests/test_record_coverage.py` as one regex over the
   commit subject.
@@ -248,7 +248,7 @@ Common CHANGELOG rules: `STANDARD.md` §3.
 
 ## Listed on the GitHub profile
 
-See `STANDARD.md` §8 for the shared profile-listing triggers. This repo's own additions:
+See `~/.agents/standards/STANDARD.md` §8 for the shared profile-listing triggers. This repo's own additions:
 
 - **Purpose drift** — the profile's one-line description must still be true. The claims it
   copies — *"no network, no message bodies"*, the local-SQLite scope — are **promises**.

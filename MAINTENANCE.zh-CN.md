@@ -193,7 +193,7 @@ bash -n bin/ocut                                       # 分发器仍能解析
 ## 7. 已知限制
 
 M1–M17，含复现说明：
-[README.zh-CN.md §9](README.zh-CN.md#-9-已知限制) /
+[README.zh-CN.md §9](README.zh-CN.md#known-limitations) /
 [README.md](README.md#-known-limitations)。
 维护时最容易踩到的几条：**M1**（宿主是事实来源，它从没落盘的调用就是不可见）、**M3**（插件用量需要
 hook **以及**一次 OpenCode 重启）、**M4**（扫描是尽力而为的）、**M6**（`unparsed` 是格式变化的信号）、

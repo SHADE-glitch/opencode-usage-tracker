@@ -20,7 +20,7 @@ no twin, so it is linked from both checklists instead, which
 1. **Date every reading.** Write `2026-10-13: …` beside any number you copy out of a run. A
    count with no date will be read as current forever.
 2. **Never copy a count into a document that has no command beside it.** That is a hard rule
-   in [`MAINTENANCE.md`](../MAINTENANCE.md) §0, which points here instead of holding numbers
+   in [`MAINTENANCE.md`](../../MAINTENANCE.md) §0, which points here instead of holding numbers
    of its own. This file is the exception by construction: every number below is dated, tied
    to the command that printed it, and marked as a reading.
 3. **Tell the three kinds of number apart.** *a pin* — the code asserts it and drift fails a

@@ -231,7 +231,7 @@ Recorded so the next reader does not "helpfully" fix them back into a broken sta
 ## 7. Known limitations
 
 M1–M17, with reproduction notes:
-[README.zh-CN.md §9](README.zh-CN.md#-9-已知限制) /
+[README.zh-CN.md §9](README.zh-CN.md#known-limitations) /
 [README.md](README.md#-known-limitations).
 The ones most likely to bite during maintenance: **M1** (the host is the source of truth;
 a call it never persisted is invisible), **M3** (plugin usage needs the hook *and* an

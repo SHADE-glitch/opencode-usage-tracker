@@ -436,7 +436,7 @@ the TUI first.**
 ## 🚧 Known limitations
 
 The list below runs **M1–M17**. The Chinese README carries the same list with more
-detail in [§9](README.zh-CN.md#-9-已知限制).
+detail in [§9](README.zh-CN.md#known-limitations).
 
 - **M1** OpenCode's own database is the **source of truth**. `ocut` can only see what the
   host persisted; a call the host never wrote a `part` for is invisible, not misrecorded.

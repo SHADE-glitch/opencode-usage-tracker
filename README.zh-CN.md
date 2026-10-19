@@ -389,6 +389,8 @@ ocut vacuum            # 压缩文件，并报告回收回来多少
 
 ---
 
+<a name="known-limitations"></a>
+
 ## 🚧 已知限制
 
 下面这份清单覆盖 **M1–M17**。
