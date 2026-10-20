@@ -1691,3 +1691,32 @@ Cost     The one-layout rule is enforced by a format marker, not by the schema: 
          but a *renamed* assistant field degrades into the same counter, and M1's blind spot
          (what the host never wrote) now concerns tool entries, not parts.
 Commit   95827b2
+
+### D-082 · 2026-10-20 · fix
+
+Symptom  The Tools panel printed `in use` beside a 0-call row (the label came from the all-time
+         flag, the count from the panel's window), a stored name containing a newline
+         (`REPO<…\n<… parameter name=`) rendered as a second line and doubled its row's
+         height, a narrow terminal dropped `state` before `avg`/`last used`, and a model the
+         host's own config offers was invisible on Tokens until its first response.
+Change   `db.entity_state` takes the row's windowed count, so the label agrees with the row
+         (`removed`/`not reported` are still decided from the inventory first); `db.clean_cell`
+         flattens control characters for the TUI, the detail screens and every headless report;
+         the narrow-terminal plan protects column 0 and the state column (and MCP's two key
+         columns) instead of dropping the tail blindly; `provider.<id>.models` and the host's
+         `~/.cache/opencode/models.json` cache — for configured providers only — are
+         inventoried as `kind='model'`, and `q_model_tokens` lists an offered-but-unused model
+         with 0 requests and NULL tokens. The six entity panels are one registry
+         (`ENTITY_TABS`), so a new kind no longer needs six separate edits.
+Evidence L0 2026-10-20: `.venv/bin/python -m pytest scripts/tests -q` — 352 passed, 3
+         subtests passed; each new case fails when its fix is undone (window state, the
+         zero-call row on the live Tools panel, the newline row height, the model-catalogue
+         inventory). L1 the same day against this machine: `ocut sync` inventories
+         `model=1` (ark-code-latest under huoshan) and `ocut tools` still prints the all-time
+         answer.
+Cost     The state label now forgets a range: a tool used last month reads `installed` at a
+         7-day window, which is the point and also a change from what the READMEs said before.
+         A model is inventoried only where the config names its provider, so a provider that
+         is authenticated without a `provider` block contributes no offered models — the
+         alternative was 232 providers' worth of rows nothing can call.
+Commit   28f8adf
