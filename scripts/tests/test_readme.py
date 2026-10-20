@@ -248,10 +248,18 @@ def test_readmes_list_every_tab_page():
     this runnable on an interpreter with no textual installed.
     """
     src = (ROOT / "scripts" / "ocut-tui.py").read_text(encoding="utf-8")
-    panes = re.findall(r'with TabPane\("([^"]+)", id="(tab-[^"]+)"\)', src)
-    assert panes, "no TabPane found — the compose() shape changed, fix this test"
+    # Dashboard and Usage are written out in compose; the six entity pages come
+    # from the ENTITY_TABS registry, which is what builds the panes, the columns
+    # and the fill calls. Both are read from the source, so this runs on an
+    # interpreter with no textual installed.
+    literal = re.findall(r'with TabPane\("([^"]+)", id="(tab-[^"]+)"\)', src)
+    entity = re.findall(r'EntityTab\("(tab-[^"]+)", "([^"]+)"', src)
+    assert len(literal) == 2 and entity, \
+        "the compose()/registry shape changed, fix this test"
+    panes = [literal[0]] + [(title, pane) for pane, title in entity] + [literal[1]]
     labels = [label for label, _ in panes]
     assert [tid for _, tid in panes][-1] == "tab-usage", panes
+    assert [tid for _, tid in panes][0] == "tab-dashboard", panes
 
     en = (ROOT / "README.md").read_text(encoding="utf-8")
     zh = (ROOT / "README.zh-CN.md").read_text(encoding="utf-8")

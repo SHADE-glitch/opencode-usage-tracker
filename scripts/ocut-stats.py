@@ -63,7 +63,10 @@ def _rendered_width(headers, rows) -> int:
 
 
 def table(headers, rows, aligns=None):
-    rows = [[("" if c is None else str(c)) for c in r] for r in rows]
+    # Every cell goes through `db.clean_cell`: a tool or model name carrying a
+    # newline or an escape sequence would otherwise split a report line or move
+    # the cursor, and the TUI cleans the same values for the same reason.
+    rows = [[("" if c is None else db.clean_cell(c)) for c in r] for r in rows]
     widths = [len(h) for h in headers]
     for r in rows:
         for i, c in enumerate(r):
@@ -95,8 +98,8 @@ def _rows(cur, keys):
     return [[r[k] for k in keys] for r in cur]
 
 
-def _state(row, kind):
-    """The `state` cell for an entity row, from the row's trailing flag pair.
+def _state(row, kind, calls_at=1):
+    """The `state` cell for an entity row, from the row's flags and its count.
 
     Every entity query ends with `installed, ever_used` and every list here ends
     with those two, so the flags are addressed from the end of the row rather
@@ -104,8 +107,13 @@ def _state(row, kind):
     same place the TUI gets it: one label per state, one function to change it.
     `kind` is required for the same reason it is required there: the label a
     builtin tool gets is not the label a plugin gets.
+
+    ``calls_at`` is where the row's own ``calls``/``uses`` cell sits (1 for every
+    single-name table, 2 for MCP, whose row starts with server+tool). Passing it
+    makes the label agree with the number beside it: a 0-call row reads
+    `installed`, never `in use`.
     """
-    return db.entity_state(row[-2], row[-1], kind)
+    return db.entity_state(row[-2], row[-1], kind, row[calls_at])
 
 
 # --- subcommands -----------------------------------------------------------
@@ -182,7 +190,7 @@ def cmd_stats(conn, args):
                                   "installed", "ever_used"])
     if rows:
         print(table(["server", "tool", "state", "calls", "last used"],
-                    [[r[0], r[1], _state(r, "mcp"), r[2], ts(r[3])] for r in rows]))
+                    [[r[0], r[1], _state(r, "mcp", 2), r[2], ts(r[3])] for r in rows]))
     else:
         print("  (no MCP tool invocations recorded)")
 
@@ -222,7 +230,7 @@ def cmd_mcp(conn, args):
                  ["server", "tool", "calls", "completed", "last_used",
                   "installed", "ever_used"])
     print(table_or(["server", "tool", "state", "calls", "ok", "last used"],
-                   [[r[0], r[1], _state(r, "mcp"), r[2], r[3], ts(r[4])] for r in rows]))
+                   [[r[0], r[1], _state(r, "mcp", 2), r[2], r[3], ts(r[4])] for r in rows]))
 
 
 # Per-model table: (header, q_model_tokens key). Order matters — the trailing

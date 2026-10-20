@@ -969,6 +969,55 @@ def test_the_inventory_reads_the_directories_and_the_config(tmp_path, tracker):
     assert stats["inventory"]["skill"] == 3
 
 
+def test_the_inventory_lists_the_models_the_config_offers(tmp_path, tracker):
+    """The Tokens panel is a list, so the names on it cannot start at the first
+    response. Both sources are the user's own files: the models a `provider`
+    block declares, and the host's models.dev cache *for those providers only* —
+    a provider nobody configured offers nothing, and inventing its models would
+    put rows on the panel for models that cannot be called.
+    """
+    path = tmp_path / "opencode.db"
+    conn = make_host(path)
+    conn.commit()
+    conn.close()
+    cfg = tmp_path / "cfg"
+    make_config(cfg, providers={
+        "huoshan": {"models": {"ark-code-latest": {"name": "Ark"}}},
+        "empty": {},
+    })
+    home = tmp_path / "home"
+    cache = home / ".cache" / "opencode" / "models.json"
+    cache.parent.mkdir(parents=True)
+    cache.write_text(json.dumps({
+        "huoshan": {"models": {"ark-code-latest": {}, "model-b": {}}},
+        "unconfigured": {"models": {"not-offered": {}}},
+    }))
+    sync.run(db_path=tracker, host_db=path, host_config=cfg, home=home)
+    models = {r["name"]: r["owner_plugin"]
+              for r in rows(tracker, "inventory", "kind='model'")}
+    # `ark-code-latest` is declared in the config and cached; `model-b` is
+    # cached under a configured provider, so the host offers it too.
+    assert models == {"ark-code-latest": "huoshan", "model-b": "huoshan"}, models
+
+
+def test_a_model_cache_with_no_config_is_not_read(tmp_path, tracker):
+    """The cache lists every provider models.dev knows (232 on this machine).
+    Without a `provider` block the machine offers none of them.
+    """
+    path = tmp_path / "opencode.db"
+    conn = make_host(path)
+    conn.commit()
+    conn.close()
+    cfg = tmp_path / "cfg"
+    make_config(cfg, providers={})
+    home = tmp_path / "home"
+    cache = home / ".cache" / "opencode" / "models.json"
+    cache.parent.mkdir(parents=True)
+    cache.write_text(json.dumps({"opencode": {"models": {"m1": {}}}}))
+    sync.run(db_path=tracker, host_db=path, host_config=cfg, home=home)
+    assert rows(tracker, "inventory", "kind='model'") == []
+
+
 # --- the two skill roots the host loads from outside its config home --------
 
 

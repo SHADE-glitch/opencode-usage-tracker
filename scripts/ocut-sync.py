@@ -213,6 +213,13 @@ COMMAND_SPEC_GLOB = "*.md"
 # Config keys read for the inventory. `lsp`, `permission` and `$schema` describe
 # behaviour, not entities, and are not inventoried.
 CONFIG_KEYS = frozenset({"mcp", "plugin", "provider", "command"})
+# The host's own cache of the models.dev catalogue, under the same `$HOME` the
+# rest of this reader walks. Read for *configured* providers only: the cache
+# lists every provider models.dev knows (232 on this machine), and a model on a
+# provider nobody configured or authenticated is not something the host offers.
+MODELS_CACHE = Path(".cache") / "opencode" / "models.json"
+PROVIDER_MODELS_KEY = "models"
+CONFIG_PROVIDER_KEY = "provider"
 PLUGIN_VERSION_SEP = "@"
 FRONTMATTER_RE = re.compile(r"\A---\r?\n(.*?)\r?\n---", re.S)
 FRONTMATTER_FIELDS = frozenset({"name", "version"})
@@ -1127,6 +1134,68 @@ def _mcp_tool_rows(conn, servers) -> list[tuple]:
     return rows
 
 
+def _model_ids(models) -> list[str]:
+    """Model ids out of a ``provider.<id>.models`` value.
+
+    The host accepts a mapping (``{"id": {...}}``) and, in older configs, a list
+    of ids; both mean the same thing here, and anything else is treated as absent
+    rather than guessed at.
+    """
+    if isinstance(models, dict):
+        return [str(k) for k in models if str(k)]
+    if isinstance(models, list):
+        return [str(m) for m in models if isinstance(m, str) and m]
+    return []
+
+
+def host_models(cfg, home) -> list[tuple[str, str, str]]:
+    """``(model id, provider id, source)`` for the models the host offers.
+
+    Both sources are the user's own files, never a list typed into this code:
+
+    * ``opencode.json``'s ``provider.<id>.models`` — the models somebody put in
+      their config by hand (a vendor gateway, a local endpoint).
+    * ``~/.cache/opencode/models.json``, the host's cache of the models.dev
+      catalogue — but **only for provider ids the config names**. Without that
+      limit every provider models.dev lists would be inventoried as offered, and
+      a provider with no credentials offers nothing.
+
+    A model that has answered a request is listed from the usage tables whether
+    or not it is here; this list is what makes an unused one visible at all.
+    """
+    providers = cfg.get(CONFIG_PROVIDER_KEY)
+    if not isinstance(providers, dict):
+        return []
+    out: list[tuple[str, str, str]] = []
+    seen = set()
+    for provider, spec in providers.items():
+        if not isinstance(provider, str) or not provider:
+            continue
+        models = spec.get(PROVIDER_MODELS_KEY) if isinstance(spec, dict) else None
+        for model in _model_ids(models):
+            if (model, provider) not in seen:
+                seen.add((model, provider))
+                out.append((model, provider, "config"))
+
+    cache_path = Path(home) / MODELS_CACHE
+    if not cache_path.is_file():
+        return out
+    try:
+        cached = json.loads(cache_path.read_text(encoding="utf-8", errors="replace"))
+    except (OSError, ValueError):
+        return out
+    if not isinstance(cached, dict):
+        return out
+    for provider in providers:
+        entry = cached.get(provider)
+        models = entry.get(PROVIDER_MODELS_KEY) if isinstance(entry, dict) else None
+        for model in _model_ids(models):
+            if (model, provider) not in seen:
+                seen.add((model, provider))
+                out.append((model, provider, "models-dev"))
+    return out
+
+
 def scan_inventory(conn, host_config=None, home=None) -> dict:
     """What is installed, as a set of ``inventory`` rows.
 
@@ -1194,6 +1263,14 @@ def scan_inventory(conn, host_config=None, home=None) -> dict:
                 version = spec.get("version") if isinstance(spec, dict) else None
                 rows.append(("command", str(name), "", version,
                              str(root / CONFIG_FILE), "config"))
+
+    # Model rows are catalogue entries, not usage: `owner_plugin` holds the
+    # provider id (the only owner a model has), so the Tokens panel can match a
+    # zero row to the pair the usage tables record.
+    for model, provider, source in host_models(cfg, home or Path.home()):
+        path = (Path(home or Path.home()) / MODELS_CACHE if source == "models-dev"
+                else root / CONFIG_FILE)
+        rows.append(("model", model, provider, None, str(path), source))
 
     rows += _mcp_tool_rows(conn, mcp_servers(host_config))
 

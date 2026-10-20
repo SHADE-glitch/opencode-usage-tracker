@@ -205,10 +205,17 @@ a passive reader has no evidence a plugin or command ran unless the hook wrote i
 
 The **Tools / Skills / Agents / Plugins / MCP** tabs are one row per entity, with calls,
 success, average duration and last use; `enter` on a row opens that entity's recent-call
-history. The **Tokens** tab is per-model token totals from the host's own step records,
-and the **Usage** tab is the request log for the window you pick. Each tab keeps its own
-time window (a preset like `7d`, or a custom span), so changing one tab's window never
-moves another's.
+history. The **Tokens** tab is per-model token totals from the host's own step records —
+and a model the host's config offers but that has not answered yet still gets a row, with
+`0` requests and `-` in every token cell. The **Usage** tab is the request log for the
+window you pick. Each tab keeps its own time window (a preset like `7d`, or a custom
+span), so changing one tab's window never moves another's.
+
+The last column of every entity tab is **state**, and it describes the row it sits on:
+`in use` only when that row has calls **inside the tab's window**, `installed` when the
+entity is on disk but has none in range, `removed` when it is gone, and `not reported`
+where there is no census to take (M15). The all-time reading is what the headless
+reports print, so `ocut tools` and the Tools tab agree when asked the same question.
 
 A plugin call that the hook recorded carries a NULL status — a tool's after-hook carries
 no status and a command has no after-hook at all — so a plugin row's status column reads
@@ -368,7 +375,10 @@ Views: `v_tools`, `v_skills`, `v_agents`, `v_mcp`, `v_plugins`.
   own per-session rollup. `sessions` and `model_calls` are one measurement at two
   granularities and are **never added**.
 - `inventory` — what is installed, from the host's directories and config: skills, agents,
-  commands, MCP servers, plugins, providers, and the tool ids each plugin registers.
+  commands, MCP servers, plugins, providers, the models each configured provider offers,
+  and the tool ids each plugin registers. A `model` row's `owner_plugin` is its provider
+  id, which is how the Tokens tab matches an offered-but-unused model to the pair the
+  usage tables record.
 - `plugin_usage` — one row per plugin tool/command call the hook saw. This is the one
   table fed from outside the host database.
 - `plugin_surface` — the tool and command ids each plugin registers, as reported by the
@@ -492,6 +502,11 @@ detail in [§9](README.zh-CN.md#known-limitations).
   more; retention keeps the newest five managed snapshots and never touches hand-made
   copies.
 - **M15** The `state` column has four labels, and the fourth means **no evidence**.
+  The choice between `in use` and `installed` follows the row's own **window**: a tool
+  called last month and not this week reads `installed` at a 7-day range, because the
+  `calls` cell beside it reads 0 and a row that contradicted itself was worse than one
+  that forgets a range. `removed` and `not reported` are decided from the inventory
+  first, so narrowing the window never relabels a name that is gone.
   OpenCode's builtin tool and agent ids live in its compiled registry: there is no
   file on disk that enumerates them, and the API that would answer needs the server
   running. So on Tools and Agents, a name with history and no inventory row reads

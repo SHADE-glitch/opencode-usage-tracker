@@ -522,6 +522,20 @@ ENTITY_STATE_INSTALLED = "installed"
 ENTITY_STATE_REMOVED = "removed"
 ENTITY_STATE_UNREPORTED = "not reported"
 
+# A host-derived name can carry a newline or a control character (a broken model
+# call did exactly that: `REPO<...\n<... parameter name=`). Textual renders a
+# newline as a second line, so one such cell doubles its row's height and shifts
+# every column after it; in a terminal report the same bytes move the cursor.
+# Applied at render time, not at ingest: the stored value stays the host's own.
+_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]+")
+
+
+def clean_cell(value) -> str:
+    """One line, no control characters; NULL renders as ``-``."""
+    if value is None:
+        return "-"
+    return _CONTROL_CHARS.sub(" ", str(value))
+
 # Which kinds this tool can actually take a census of. `skill`, `plugin` and
 # `mcp` are enumerable: there is a file to read or a config key to name, so a
 # name with no inventory row really is gone. `tool` and `agent` are not — the
@@ -538,12 +552,19 @@ ENTITY_CENSUS = {
 }
 
 
-def entity_state(installed, ever_used, kind: str) -> str:
+def entity_state(installed, ever_used, kind: str, calls=None) -> str:
     """The label for one row of an entity panel, from the two CTE flags.
 
     ``kind`` is required rather than defaulted. A default would let a front end
     quietly render the old three-state label for every row and no test would
     notice, which is the failure this function exists to stop.
+
+    ``calls`` is the row's own count in the panel's current window. Pass it and
+    the label follows that window: a name with 0 calls reads ``installed``, not
+    ``in use``, because a state column that disagrees with the row beside it
+    ("in use" next to a 0) was the confusing half. ``ever_used`` stays the
+    fallback for callers with no windowed count — the all-time headless reports
+    — so both surfaces still agree when asked the same question.
 
     ``removed`` outranks ``in use`` deliberately: it is the half that is
     actionable, and "in use" for a name that is no longer on disk reads as an
@@ -562,14 +583,17 @@ def entity_state(installed, ever_used, kind: str) -> str:
     nothing. It only ever applies where `installed` is 0, so a name that *is*
     in the inventory still reads installed or in use as before.
 
-    The flags are the CTE's, not the windowed count, so narrowing the window does
-    not change the label: a tool last used last week is still in use.
+    ``removed`` and ``not reported`` are decided before the count is consulted,
+    so a name that is gone reads the same in every window; only the choice
+    between ``in use`` and ``installed`` follows the window.
     """
     if not installed:
         if not ENTITY_CENSUS.get(kind, False):
             return ENTITY_STATE_UNREPORTED
         return ENTITY_STATE_REMOVED
-    return ENTITY_STATE_USED if ever_used else ENTITY_STATE_INSTALLED
+    if calls is None:
+        calls = ever_used
+    return ENTITY_STATE_USED if calls else ENTITY_STATE_INSTALLED
 
 VIEWS_SQL = f"""
 DROP VIEW IF EXISTS v_tools;
@@ -1341,7 +1365,7 @@ def q_model_tokens(conn, start_ts=None, end_ts=None):
     versus "how much did the model read").
     """
     where, params = _time_filter(start_ts, end_ts)
-    return conn.execute(
+    used = (
         "SELECT model, provider,"
         " COUNT(*) AS responses,"
         " SUM(CASE WHEN usage_available=1 THEN 1 ELSE 0 END) AS with_usage,"
@@ -1357,7 +1381,28 @@ def q_model_tokens(conn, start_ts=None, end_ts=None):
         # Grouped by (model, provider): the same model id can be served through
         # two configured providers, and those must not merge.
         f" FROM model_calls{where}"
-        " GROUP BY model, provider ORDER BY responses DESC",
+        " GROUP BY model, provider")
+    # The list is installed ∪ used-in-window, like every other panel: the models
+    # the host's own config offers are inventoried on each sync, and one that has
+    # not answered in this window still gets a zero row instead of vanishing.
+    # ``owner_plugin`` carries the provider id for a model row (the only owner a
+    # model has). A pair already present in the window is not repeated; the same
+    # model id on another provider keeps its own row, because the two routes are
+    # different measurements.
+    available = (
+        "SELECT i.name AS model, NULLIF(i.owner_plugin, '') AS provider,"
+        " 0 AS responses, 0 AS with_usage,"
+        " NULL AS prompt_tokens, NULL AS completion_tokens,"
+        " NULL AS reasoning_tokens, NULL AS cache_read, NULL AS cache_write,"
+        " NULL AS cost, NULL AS total_tokens, NULL AS total_tokens_source,"
+        " NULL AS prompt_total_tokens"
+        " FROM inventory i WHERE i.kind='model'"
+        " AND NOT EXISTS (SELECT 1 FROM used u WHERE u.model = i.name"
+        "  AND COALESCE(u.provider, '') = COALESCE(i.owner_plugin, ''))")
+    return conn.execute(
+        f"WITH used AS ({used}) SELECT * FROM ("
+        f" SELECT * FROM used UNION ALL {available}"
+        ") ORDER BY responses DESC, model, provider",
         params,
     ).fetchall()
 

@@ -399,8 +399,8 @@ def test_an_absent_field_reads_as_a_dash_never_as_zero(tracker, clock):
 
 # --- the wide-table machinery under a cap ----------------------------------
 
-def test_a_narrow_screen_shows_a_prefix_and_says_what_is_hidden(tracker, clock):
-    """The column plan is a prefix, and the note names the cut — at both widths.
+def test_a_narrow_screen_keeps_the_name_and_state_and_names_the_cut(tracker, clock):
+    """The plan keeps the order, the name and the state, and names what it dropped.
 
     Both directions are asserted because at a wide terminal nothing is hidden and the
     note must be *empty*: a note that always speaks trains people to ignore it.
@@ -428,7 +428,12 @@ def test_a_narrow_screen_shows_a_prefix_and_says_what_is_hidden(tracker, clock):
         headers = headers_of(table)
         assert len(headers) < len(tui.TOOLS_COLUMNS), headers
         assert len(headers) >= tui.WideTableMixin.MIN_SHOWN, headers
-        assert headers == list(tui.TOOLS_COLUMNS)[:len(headers)], headers
+        # The plan drops from the tail except for what a row cannot be read
+        # without: the name column and the state column stay, `avg`/`last used`
+        # go first. Order is never rearranged.
+        assert headers == [c for c in tui.TOOLS_COLUMNS if c in headers], headers
+        assert headers[0] == tui.TOOLS_COLUMNS[0], headers
+        assert tui._STATE in headers, headers
         note = text_of(app.screen, "#colnote-tools")
         assert note, "a cut with no note is silent"
         for hidden in [c for c in tui.TOOLS_COLUMNS if c not in headers]:

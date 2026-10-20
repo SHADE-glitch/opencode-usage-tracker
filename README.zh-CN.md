@@ -190,8 +190,14 @@ tab 栏与页脚就是全部按键面：
 
 **Tools / Skills / Agents / Plugins / MCP** 五个 tab 一行一个实体，列出调用次数、成功数、
 平均耗时与最近使用；在某行按 `enter` 打开该实体的最近调用历史。**Tokens** tab 是宿主自己
-每步记录汇总出的按模型 token 合计，**Usage** tab 是你所选窗口的请求日志。每个 tab 各自保留
+每步记录汇总出的按模型 token 合计——宿主配置里声明过、但还没回答过请求的模型也会占一行，
+`0` 次请求、每个 token 格都是 `-`。**Usage** tab 是你所选窗口的请求日志。每个 tab 各自保留
 自己的时间窗口（`7d` 这类预设，或一段自定义区间），改一个 tab 的窗口不会动另一个。
+
+每个实体 tab 的最后一列是 **state**，说的是**这一行自己**：只有该行在**本 tab 窗口内**有调用时
+才读作 `in use`，在磁盘上但窗口内没有调用读作 `installed`，不在了读作 `removed`，没有可普查
+依据的读作 `not reported`（M15）。无头报表（`ocut tools` 等）给的是全时段口径，所以问同一个
+问题时两边答案一致。
 
 hook 记下的插件调用其 status 是 NULL——工具 after-hook 不带状态，命令则根本没有 after-hook——
 所以插件行的状态列显示 `-`，不是 `0`。
@@ -333,7 +339,9 @@ OpenCode 自己的状态（只读——从不以写入方式打开）
 - `sessions`：每个 OpenCode 会话一行（含子会话），带宿主自己的按会话 rollup。`sessions` 与
   `model_calls` 是同一测量的两个粒度，**绝不相加**。
 - `inventory`：装了什么，读自宿主的目录与配置：skills、agents、commands、MCP 服务、插件、
-  provider，以及每个插件注册的工具 id。
+  provider、每个已配置 provider 提供的模型，以及每个插件注册的工具 id。`model` 行的
+  `owner_plugin` 就是它的 provider id，Tokens tab 靠这一点把「提供了但没用过」的模型与用量表
+  记录的那一对对上。
 - `plugin_usage`：hook 看到的每次插件工具/命令调用一行。这是唯一一张数据来自宿主库之外的表。
 - `plugin_surface`：每个插件加载时注册的工具与命令 id，由 hook 上报；`ocut sync` 在文件系统重写
   之后把它折回 `inventory`，并丢掉已不再安装的插件留下的行。
@@ -433,7 +441,10 @@ ocut vacuum            # 压缩文件，并报告回收回来多少
   与 `last used` 跟着该 tab 的窗口走，与其他实体页一致。
 - **M12** 备份是手动的、只在破坏性操作之前。**没有 systemd** timer 了；保留策略只留最新五份托管快照，
   从不碰手工副本。
-- **M15** `state` 列有四个标签，第四个的意思是**没有证据**。OpenCode 的内置工具与内置 agent id
+- **M15** `state` 列有四个标签，第四个的意思是**没有证据**。`in use` 与 `installed`
+  之间的选择跟随该行自己的**窗口**：上个月用过、这周没用的工具在 7 天区间里读作
+  `installed`，因为旁边的 `calls` 格就是 0，一行自相矛盾比忘掉一个区间更糟。`removed`
+  与 `not reported` 先由 inventory 决定，所以缩小窗口永远不会改掉一个已经不在的名字。OpenCode 的内置工具与内置 agent id
   存在于它编译后的注册表里：磁盘上没有任何文件能枚举它们，而能回答的 API 需要把 server 跑起来。
   所以在 Tools 与 Agents 上，一个「有历史、但没有 inventory 行」的名字读作 `not reported`，而不是
   `removed` —— 这个读取器不会把一个内置工具说成被删了。在 Skills / Plugins / MCP 上 inventory 是

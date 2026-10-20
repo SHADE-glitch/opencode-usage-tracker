@@ -195,6 +195,88 @@ def value_labels(app, selector: str) -> list[str]:
 
 # --- the tab set -----------------------------------------------------------
 
+def test_a_zero_call_row_never_reads_in_use(tmp_path):
+    """The state cell agrees with the count beside it.
+
+    `ever_used` is un-windowed, so a tool called only outside the tab's range used
+    to print "in use" next to `calls = 0` — two cells on one row contradicting
+    each other. The label now follows the row's window, and the all-time answer
+    is still what the headless reports print.
+    """
+    host = tmp_path / "opencode.db"
+    build_host(host)
+    cfg = build_config(tmp_path / "cfg")
+    out = tmp_path / "usage.db"
+    db.load_sync().run(db_path=out, host_db=host, host_config=cfg, quiet=True)
+    conn = sqlite3.connect(out)
+    conn.execute("INSERT INTO inventory(kind, name, owner_plugin, source)"
+                 " VALUES('tool','old-only','','fixture')")
+    conn.execute(
+        "INSERT INTO tool_calls(call_id, session_id, project, tool_name, category,"
+        " status, ts) VALUES('o1','ses_old','/proj','old-only','builtin',"
+        "'completed',?)", (now_ms() - 40 * DAY,))
+    conn.commit()
+    conn.close()
+
+    async def body(pilot, app):
+        await activate(app, pilot, "tab-tools")
+        table = app.query_one("#t-tools", DataTable)
+        heads = headers(table)
+        assert tui._STATE in heads, heads
+        state_at = heads.index(tui._STATE)
+        calls_at = heads.index("calls")
+        rows = {cell(table, i, 0): (cell(table, i, calls_at),
+                                    cell(table, i, state_at))
+                for i in range(table.row_count)}
+        assert rows["old-only"] == ("0", db.ENTITY_STATE_INSTALLED), rows["old-only"]
+        # The contradiction this pins: nothing with a 0 in `calls` may claim to
+        # be in use, and nothing in use may show 0. A tool with no census row
+        # (`bash` here) reads "not reported" whatever its count — that is a
+        # different, deliberate label, not the one this case is about.
+        for name, (count, state) in rows.items():
+            if state == db.ENTITY_STATE_USED:
+                assert count != "0", (name, count)
+            if count == "0":
+                assert state != db.ENTITY_STATE_USED, (name, state)
+
+    drive(lambda: tui.TrackerApp(out, clock=lambda: now_ms() / 1000), body)
+
+
+def test_a_newline_in_a_stored_name_cannot_double_a_row(tmp_path):
+    """A host-derived name can carry a newline (a malformed model call did:
+    `REPO<…\n<… parameter name=`). Textual renders that as a second line, so one
+    cell doubles its row's height and shifts every column after it. The stored
+    value is left alone; the cell that is painted is flattened.
+    """
+    host = tmp_path / "opencode.db"
+    build_host(host)
+    cfg = build_config(tmp_path / "cfg")
+    out = tmp_path / "usage.db"
+    db.load_sync().run(db_path=out, host_db=host, host_config=cfg, quiet=True)
+    conn = sqlite3.connect(out)
+    conn.execute(
+        "INSERT INTO tool_calls(call_id, session_id, project, tool_name, category,"
+        " status, ts) VALUES('x1','ses_today','/proj','REPO<\n<parameter name=',"
+        "'builtin','completed',?)", (now_ms(),))
+    conn.commit()
+    conn.close()
+
+    async def body(pilot, app):
+        await activate(app, pilot, "tab-tools")
+        table = app.query_one("#t-tools", DataTable)
+        names = [cell(table, i, 0) for i in range(table.row_count)]
+        assert names, "the fixture has tool calls"
+        assert not any("\n" in n for n in names), names
+        assert any(n.startswith("REPO< ") and "parameter name=" in n
+                   for n in names), names
+        # One line per row: a doubled cell would make the rendered table taller
+        # than its rows, which is the defect this flattens.
+        assert table.virtual_size.height <= table.row_count + 2, (
+            table.virtual_size.height, table.row_count)
+
+    drive(lambda: tui.TrackerApp(out, clock=lambda: now_ms() / 1000), body)
+
+
 def test_the_tracker_shows_cbuts_eight_tabs_in_order(tracker):
     async def body(pilot, app):
         from textual.widgets import Tab

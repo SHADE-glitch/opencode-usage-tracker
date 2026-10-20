@@ -172,16 +172,52 @@ def test_removing_an_entity_does_not_remove_its_history(conn, kind):
     assert after == before == 3
 
 
-def test_the_state_does_not_follow_the_window(conn):
-    """`ever_used` comes from an un-windowed scan of the usage tables, not from
-    the panel's call count. Reading it off the count would relabel every tool
-    used last week "installed" the moment the range narrowed to a day.
+def test_the_state_follows_the_window_when_a_count_is_passed(conn):
+    """The label agrees with the row it sits on.
+
+    This reverses an earlier rule on purpose: `ever_used` comes from an
+    un-windowed scan, so a panel narrowed to a day printed "in use" beside a 0
+    and a person reading the row could not tell which cell to believe. The
+    windowed count decides between `in use` and `installed`; a caller with no
+    count (the all-time headless reports) still gets the ever-used answer, so
+    both surfaces agree when they are asked the same question.
     """
     install(conn, "tool", "yesterday")
     used(conn, "tool", "yesterday", ts=1_700_000_000_000)
-    row = db.q_tools(conn, start_ts=1_900_000_000_000)[0]
-    assert row["calls"] == 0, "the window should have emptied the count"
-    assert db.entity_state(row["installed"], row["ever_used"], "tool") == db.ENTITY_STATE_USED
+    windowed = db.q_tools(conn, start_ts=1_900_000_000_000)[0]
+    assert windowed["calls"] == 0, "the window should have emptied the count"
+    assert db.entity_state(windowed["installed"], windowed["ever_used"], "tool",
+                           windowed["calls"]) == db.ENTITY_STATE_INSTALLED
+    alltime = db.q_tools(conn)[0]
+    assert db.entity_state(alltime["installed"], alltime["ever_used"], "tool",
+                           alltime["calls"]) == db.ENTITY_STATE_USED
+    # No count -> the flag answers, which is the headless all-time reading.
+    assert db.entity_state(1, 1, "tool") == db.ENTITY_STATE_USED
+
+
+def test_the_window_never_relabels_a_name_that_is_gone_or_unreported(conn):
+    """Only the choice between two live labels follows the window. `removed` and
+    `not reported` are decided from the inventory first, so a retired skill with
+    older calls does not become "installed" the moment the range narrows, and a
+    builtin tool with no census does not become one either.
+    """
+    used(conn, "skill", "retired", ts=1_700_000_000_000)
+    assert db.entity_state(0, 1, "skill", 0) == db.ENTITY_STATE_REMOVED
+    assert db.entity_state(0, 1, "tool", 0) == db.ENTITY_STATE_UNREPORTED
+    assert db.entity_state(0, 0, "tool", 0) == db.ENTITY_STATE_UNREPORTED
+
+
+def test_a_control_character_in_a_name_cannot_break_a_cell(conn):
+    """A host-derived name can carry a newline (a malformed model call did). A
+    newline in a DataTable cell renders as a second line and doubles that row's
+    height, and the same bytes move the cursor in a terminal report. The stored
+    value is left alone; what is painted goes through `clean_cell`.
+    """
+    assert db.clean_cell("REPO<\n<parameter name=") == "REPO< <parameter name="
+    assert db.clean_cell("a\x1b[31mb") == "a [31mb"
+    assert db.clean_cell(None) == "-"
+    assert db.clean_cell(12) == "12"
+    assert "\n" not in db.clean_cell("two\nlines")
 
 
 def test_removed_outranks_in_use(conn):
@@ -382,3 +418,26 @@ def test_the_headless_plugins_list_prints_a_state_per_row(conn):
     printed = {ln.split()[0]: ln.split()[-1] for ln in body}
     assert printed["alpha"] == db.ENTITY_STATE_INSTALLED, body
     assert printed["retired"] == db.ENTITY_STATE_REMOVED, body
+
+# --- the Tokens panel lists what the host offers ---------------------------
+
+def test_an_offered_model_with_no_requests_still_gets_a_row(conn):
+    """The Tokens panel is a list, like every other entity panel: a model the
+    host's config declares but that has not answered yet shows 0 requests and
+    `-` tokens, instead of existing only from its first response onwards. A model
+    that *has* answered is listed once, not twice.
+    """
+    install(conn, "model", "ark-code-latest", owner="huoshan")
+    install(conn, "model", "used-model", owner="opencode")
+    conn.execute(
+        "INSERT INTO model_calls(call_id, model, provider, prompt_tokens,"
+        " completion_tokens, total_tokens, ts) VALUES('c1','used-model',"
+        "'opencode',10,5,15,1700000000000)")
+    conn.commit()
+    rows = {r["model"]: r for r in db.q_model_tokens(conn)}
+    assert sorted(rows) == ["ark-code-latest", "used-model"], sorted(rows)
+    idle = rows["ark-code-latest"]
+    assert (idle["provider"], idle["responses"]) == ("huoshan", 0)
+    assert idle["total_tokens"] is None, "an unused model is '-', never a 0"
+    assert rows["used-model"]["responses"] == 1
+    assert rows["used-model"]["total_tokens"] == 15
