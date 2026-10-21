@@ -94,6 +94,19 @@ def fmt_n(v):
     return f"{v:,}"
 
 
+def fmt_cost(v):
+    """Render money, showing ``-`` for NULL and ``$0.0000`` for a recorded zero.
+
+    A free route really did cost nothing, so 0 and "no price recorded" must not
+    look alike — the same rule `fmt_n` follows for tokens. Four decimals because
+    a single step on this host costs $0.0076 at the low end, and two would print
+    the cheap half of a window as $0.00.
+    """
+    if v is None:
+        return "-"
+    return f"${v:.4f}"
+
+
 def count_n(v, singular, plural=None):
     """``1 tool call`` / ``12 tool calls``, grouped like every count cell.
 
@@ -165,13 +178,18 @@ CUSTOM_RANGE = "custom"
 # cache hit/miss/write · cache hit rate. The cache vocabulary is CodeBuddy's,
 # mapped onto OpenCode's fields — its uncached `prompt_tokens` is the cache miss,
 # `cache_read` the hit, `cache_write` the write (see `_input_tokens`).
+# `Cost` is the one column CodeBuddy cannot have: OpenCode records a per-step
+# price, so the money a window spent is a measurement here rather than an
+# estimate. It sits right after `API Total` — the two numbers a reader compares —
+# and ahead of the cache detail so a narrow terminal drops cache before money.
 USAGE_COLUMNS = ("Time", "Model", "Provider", "Usage Total", "Input", "Output",
-                 "API Total", "Cache hit", "Cache miss",
+                 "API Total", "Cost", "Cache hit", "Cache miss",
                  "Cache write", "Cache hit rate")
 
 # Tokens-tab column order, the same set CodeBuddy's Tokens tab shows.
 TOKEN_COLUMNS = ("Model", "Provider", "Usage Total", "Requests", "Input",
-                 "Output", "API Total", "Cache hit", "Cache miss", "Cache write")
+                 "Output", "API Total", "Cost", "Cache hit", "Cache miss",
+                 "Cache write")
 
 # Entity tabs and the two detail screens. Declared here rather than inline at
 # `add_columns` because the column plan needs the full list to compute a prefix from,
@@ -182,7 +200,10 @@ TOKEN_COLUMNS = ("Model", "Provider", "Usage Total", "Requests", "Input",
 # so a narrow terminal loses "last used" before it loses the answer to "is this
 # thing still installed".
 _STATE = db.ENTITY_STATE_COLUMN
-TOOLS_COLUMNS = ("tool", "calls", "ok", "fail", "avg", "last used", _STATE)
+# ``run`` is the host's third status. Without it `ok` + `fail` fell short of
+# `calls` and nothing said why — while `ocut tools` had the column, and the
+# drill-down's summary line already printed "N running".
+TOOLS_COLUMNS = ("tool", "calls", "ok", "fail", "run", "avg", "last used", _STATE)
 SKILLS_COLUMNS = ("skill", "calls", "ok", "last used", _STATE)
 AGENTS_COLUMNS = ("agent", "calls", "last used", _STATE)
 # `uses` is real — plugin/ocut-hook.js writes it — so 0 means "nothing recorded",
@@ -197,7 +218,7 @@ PLUGIN_HISTORY_COLUMNS = ("when", "kind", "item", "status", "duration",
                           "session", "project")
 # Nine columns still need ~150 cells: on an 80-wide terminal more than half of this
 # table used to sit past the right edge with no key that would bring it back.
-RESPONSE_COLUMNS = ("when", "model", "prompt", "completion", "total",
+RESPONSE_COLUMNS = ("when", "model", "prompt", "completion", "total", "cost",
                     "cache read", "cache write", "usage", "message_id")
 
 
@@ -229,11 +250,12 @@ class EntityTab(NamedTuple):
 
 
 def _tool_row(r, kind):
-    # "fail" is the host's `error` status; its third status, `running`, is a call
-    # still in flight and is not counted as one.
+    # The host's three statuses, one column each: `ok` is `completed`, `fail` is
+    # `error`, `run` is `running` (a call still in flight). Counting `running` as
+    # a failure would invent an error; leaving it out left calls > ok + fail.
     return [r["tool_name"], f"{r['calls']:,}", f"{r['completed']:,}",
-            f"{r['errored']:,}", ms(r["avg_ms"]), ts(r["last_used"]),
-            state_cell(r, kind, r["calls"])]
+            f"{r['errored']:,}", f"{r['running']:,}", ms(r["avg_ms"]),
+            ts(r["last_used"]), state_cell(r, kind, r["calls"])]
 
 
 def _skill_row(r, kind):
@@ -272,7 +294,7 @@ def _token_row(r, kind):
             fmt_n(_input_tokens(r["prompt_tokens"], r["cache_read"],
                                 r["cache_write"])),
             fmt_n(r["completion_tokens"]),
-            fmt_n(r["total_tokens"]),
+            fmt_n(r["total_tokens"]), fmt_cost(r["cost"]),
             fmt_n(r["cache_read"]),
             fmt_n(r["prompt_tokens"]),
             fmt_n(r["cache_write"])]
@@ -1304,7 +1326,7 @@ if HAVE_TEXTUAL:
                     rows.append([
                         ts(r["ts"]), r["model"] or "-",
                         fmt_n(r["prompt_tokens"]), fmt_n(r["completion_tokens"]),
-                        fmt_n(r["total_tokens"]),
+                        fmt_n(r["total_tokens"]), fmt_cost(r["cost"]),
                         fmt_n(r["cache_read"]),
                         fmt_n(r["cache_write"]),
                         "yes" if r["usage_available"] else "not counted",
@@ -1535,6 +1557,7 @@ if HAVE_TEXTUAL:
                                 Static(id="dash-tok-api"),
                                 Static(id="dash-tok-usage"),
                                 Static(id="dash-tok-hit-rate"),
+                                Static(id="dash-tok-cost"),
                                 classes="usage-panel", id="panel-dash-tokens",
                             ),
                             Vertical(
@@ -1565,7 +1588,8 @@ if HAVE_TEXTUAL:
                             Vertical(
                                 Static("Runtime", classes="panel-title"),
                                 Static(id="dash-rt-completed"),
-                                Static(id="dash-rt-incomplete"),
+                                Static(id="dash-rt-failed"),
+                                Static(id="dash-rt-running"),
                                 Static(id="dash-rt-avg"),
                                 Static(id="dash-rt-sessions"),
                                 Static(id="dash-rt-projects"),
@@ -1602,6 +1626,7 @@ if HAVE_TEXTUAL:
                                 Static(id="sum-input"),
                                 Static(id="sum-output"),
                                 Static(id="sum-total"),
+                                Static(id="sum-cost"),
                                 classes="usage-panel", id="panel-tokens",
                             ),
                             Vertical(
@@ -2017,7 +2042,7 @@ if HAVE_TEXTUAL:
             try:
                 s = db.q_usage_summary(conn, start, end)
                 self._render_summary_panels(s)
-                self._fill_usage_logs(conn, start, end)
+                self._fill_usage_logs(conn, start, end, s["requests"])
             except sqlite3.Error as e:
                 # e.g. an un-migrated DB where the newer columns are missing.
                 self.query_one("#usage-status", Static).update(
@@ -2047,6 +2072,7 @@ if HAVE_TEXTUAL:
                                     s["cache_write"])))
             put("#sum-output", "Output", fmt_n(s["completion_tokens"]))
             put("#sum-total", "API Total", fmt_n(s["total_tokens"]))
+            put("#sum-cost", "Cost", fmt_cost(s["cost"]))
             put("#sum-cache-hit", "Cache hit", fmt_n(s["cache_read"]))
             put("#sum-cache-miss", "Cache miss", fmt_n(s["prompt_tokens"]))
             put("#sum-cache-write", "Cache write", fmt_n(s["cache_write"]))
@@ -2135,6 +2161,9 @@ if HAVE_TEXTUAL:
             self._put_panel("#dash-tok-hit-rate", "Hit rate",
                             self._hit_rate(s["cache_read"], s["prompt_tokens"],
                                            s["cache_write"]))
+            # The host's own money for these steps. CodeBuddy has no such source,
+            # which is why this panel differs from the sibling project by design.
+            self._put_panel("#dash-tok-cost", "Cost", fmt_cost(s["cost"]))
 
         def _render_dashboard_cache(self, s: dict) -> None:
             self._put_panel("#dash-cache-hit", "Cache hit", fmt_n(s["cache_read"]))
@@ -2143,11 +2172,12 @@ if HAVE_TEXTUAL:
 
         def _render_dashboard_runtime(self, a: dict) -> None:
             # counts are COUNT-based -> a real 0; avg_ms is NULL when nothing ran.
-            # OpenCode names its two non-completed states `error` and `running`;
-            # both are "incomplete" in CodeBuddy's vocabulary, so they are summed.
+            # `error` and `running` are separate panels, not one "Incomplete":
+            # the Tools tab shows them as `fail` and `run`, and a dashboard that
+            # summed them disagreed with the tab by the number of live calls.
             self._put_panel("#dash-rt-completed", "Completed", f"{a['completed'] or 0:,}")
-            self._put_panel("#dash-rt-incomplete", "Incomplete",
-                            f"{(a['errored'] or 0) + (a['running'] or 0):,}")
+            self._put_panel("#dash-rt-failed", "Failed", f"{a['errored'] or 0:,}")
+            self._put_panel("#dash-rt-running", "Running", f"{a['running'] or 0:,}")
             self._put_panel("#dash-rt-avg", "Avg tool time", ms(a["avg_ms"]))
             self._put_panel("#dash-rt-sessions", "Sessions", f"{a['sessions'] or 0:,}")
             self._put_panel("#dash-rt-projects", "Projects", f"{a['projects'] or 0:,}")
@@ -2229,12 +2259,27 @@ if HAVE_TEXTUAL:
             frac = db.cache_hit_rate(hit, miss, write)
             return "-" if frac is None else f"{frac * 100:.1f}%"
 
-        def _fill_usage_logs(self, conn, start, end) -> None:
+        def _fill_usage_logs(self, conn, start, end, total=None) -> None:
+            """Fill the request log, and say so when the list is cut short.
+
+            ``total`` is the window's step count, which ``q_usage_summary`` has
+            already counted. The table holds ``USAGE_LOG_LIMIT`` rows, and a
+            silently shortened list is the row-level version of the half column
+            the wide plan refuses to render.
+
+            The note used to say "no cost/duration/status" — copied from CodeBuddy,
+            where there is no cost source. OpenCode records a price per step, so
+            that sentence was denying a column the page now shows.
+            """
             rows = db.q_usage_request_logs(conn, start, end,
                                            limit=self.USAGE_LOG_LIMIT)
-            self.query_one("#usage-note", Static).update(
-                "Newest first · cache hit=read, write=create · "
-                "no cost/duration/status" if rows else "")
+            note = ""
+            if rows:
+                note = ("Newest first · cache hit=read, write=create · "
+                        "no duration/status")
+                if total is not None and total > len(rows):
+                    note += f" · showing {len(rows):,} of {total:,}"
+            self.query_one("#usage-note", Static).update(note)
             out = [[
                 local_time(r["ts"]), r["model"] or "-",
                 db.provider_label(r["provider"]),
@@ -2244,7 +2289,7 @@ if HAVE_TEXTUAL:
                 fmt_n(_input_tokens(r["prompt_tokens"], r["cache_read"],
                                     r["cache_write"])),
                 fmt_n(r["completion_tokens"]),
-                fmt_n(r["total_tokens"]),
+                fmt_n(r["total_tokens"]), fmt_cost(r["cost"]),
                 fmt_n(r["cache_read"]),
                 fmt_n(r["prompt_tokens"]),
                 fmt_n(r["cache_write"]),

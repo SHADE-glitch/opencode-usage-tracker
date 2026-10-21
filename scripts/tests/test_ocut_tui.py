@@ -384,6 +384,34 @@ def test_the_tools_tab_prints_exactly_its_own_window_of_the_tools_query(
     conn.close()
 
 
+def test_the_tools_tab_counts_a_call_still_in_flight(tracker, clock):
+    """`run` is the `running` status, not a fourth spelling of failed.
+
+    The fixture's only non-completed call is an `error` (kept on purpose, see the
+    window test above), so a `running` call is added by hand here — and the
+    panel must give it its own column, because "how many are in flight" is the
+    question a count of errors cannot answer.
+    """
+    conn = sqlite3.connect(tracker)
+    ts = int(clock() * 1000) - 60_000   # inside every window the fixture spans
+    conn.execute(
+        "INSERT INTO tool_calls(call_id, session_id, tool_name, category,"
+        " status, ts) VALUES('prt_running', 'ses_today', 'bash', 'builtin',"
+        " 'running', ?)", (ts,))
+    conn.commit()
+
+    async def body(pilot, app):
+        await activate(app, pilot, "tab-tools")
+        table = app.query_one("#t-tools", DataTable)
+        assert headers(table) == list(tui.TOOLS_COLUMNS), headers(table)
+        at = list(tui.TOOLS_COLUMNS).index("run")
+        row = first_column(table).index("bash")
+        assert cell(table, row, at) == "1", (
+            first_column(table), [cell(table, row, j)
+                                  for j in range(len(tui.TOOLS_COLUMNS))])
+    drive(lambda: tui.TrackerApp(str(tracker), clock=clock), body)
+    conn.close()
+
 def test_the_window_changes_what_the_dashboard_counts(tracker, clock):
     """The same pane, two windows, two answers — the fixture spans two days.
 
@@ -459,6 +487,88 @@ def test_token_panels_print_the_hosts_own_step_numbers(tracker, clock):
     drive(lambda: tui.TrackerApp(str(tracker), clock=clock), body)
     conn.close()
 
+
+def test_the_dashboard_shows_cost_failed_and_running_separately(tracker, clock):
+    """The two repairs the old dashboard hid: cost is a number, and error/running
+    are two counts.
+
+    "Incomplete" once summed `error` + `running` (492 on this host) while the
+    Tools tab's `fail` said 485 — one panel answering two questions with one
+    number. The fixture has an `error` call already; a `running` one and a
+    cost-bearing step are inserted by hand, and each panel is read against the
+    SQL the window would produce.
+    """
+    conn = sqlite3.connect(tracker)
+    ts = int(clock() * 1000) - 60_000
+    conn.execute(
+        "INSERT INTO tool_calls(call_id, session_id, tool_name, category,"
+        " status, ts) VALUES('prt_dash_run', 'ses_today', 'bash', 'builtin',"
+        " 'running', ?)", (ts,))
+    conn.execute(
+        "INSERT INTO model_calls(call_id, model, provider, prompt_tokens,"
+        " completion_tokens, total_tokens, cost, ts)"
+        " VALUES('prt_dash_cost', 'model-x', 'vendor', 10, 5, 15, 0.0125, ?)",
+        (ts,))
+    conn.commit()
+
+    async def body(pilot, app):
+        app.tab_range["tab-dashboard"] = "all"
+        app._refresh_active_tab()
+        await pilot.pause(0.6)
+        got = {w.id: str(w.content) for w in app.query(
+            "#dash-tok-cost, #dash-rt-failed, #dash-rt-running")}
+        failed = conn.execute("SELECT COUNT(*) FROM tool_calls"
+                              " WHERE status='error'").fetchone()[0]
+        running = conn.execute("SELECT COUNT(*) FROM tool_calls"
+                               " WHERE status='running'").fetchone()[0]
+        cost = conn.execute("SELECT SUM(cost) FROM model_calls").fetchone()[0]
+        assert f"${cost:.4f}" in got["dash-tok-cost"], got
+        assert f"{failed:,}" in got["dash-rt-failed"], got
+        assert f"{running:,}" in got["dash-rt-running"], got
+        # Two panels, two numbers — the old sum would fail this line.
+        assert got["dash-rt-failed"] != got["dash-rt-running"], got
+    drive(lambda: tui.TrackerApp(str(tracker), clock=clock), body)
+    conn.close()
+
+
+def test_the_request_log_says_how_many_rows_it_is_showing(tracker, clock):
+    """The request log holds `USAGE_LOG_LIMIT` rows; a longer window is cut,
+    and the cut must be on the note, not in the row count.
+
+    The note used to deny a cost column that OpenCode's per-step price makes
+    real; while that sentence was being corrected, the "how many am I not
+    seeing" answer was added beside it — the same honesty the wide plan applies
+    to columns.
+    """
+    conn = sqlite3.connect(tracker)
+    ts = int(clock() * 1000) - 60_000
+    limit = tui.TrackerApp.USAGE_LOG_LIMIT
+    for i in range(limit + 20):   # fixture steps + these must exceed the limit
+        conn.execute(
+            "INSERT INTO model_calls(call_id, model, provider, prompt_tokens,"
+            " completion_tokens, total_tokens, ts) VALUES(?,?,?,?,?,?,?)",
+            (f"prt_bulk_{i}", "model-x", "vendor", 10, 5, 15, ts - i))
+    conn.commit()
+
+    async def body(pilot, app):
+        await activate(app, pilot, "tab-usage")
+        note = " ".join(str(app.query_one("#usage-note").content).split())
+        # The window's own step count, not the number just inserted: the fixture
+        # also carries an old step (40 days back, outside the 1d default) and two
+        # today, and the note must count the window's three, no more.
+        start, end = app._bounds_for("tab-usage")
+        total = conn.execute(
+            "SELECT COUNT(*) FROM model_calls"
+            " WHERE (? IS NULL OR ts >= ?) AND (? IS NULL OR ts <= ?)",
+            (start, start, end, end)).fetchone()[0]
+        assert f"showing {limit:,} of {total:,}" in note, note
+        table = app.query_one("#t-usage", DataTable)
+        assert table.row_count == limit, table.row_count
+        # The Cost column is in the header, and the note no longer denies it.
+        assert "Cost" in headers(table), headers(table)
+        assert "no cost" not in note, note
+    drive(lambda: tui.TrackerApp(str(tracker), clock=clock), body)
+    conn.close()
 
 def test_the_cache_panel_uses_codebuddys_three_labels(tracker):
     """The cache breakdown carries CodeBuddy's three labels, not two.

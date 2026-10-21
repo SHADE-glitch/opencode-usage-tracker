@@ -313,7 +313,8 @@ def host_v2(tmp_path):
             v2_tool("call_bash", "bash", input={"command": "echo hi"},
                     metadata={"status": "completed", "exit": 0}),
             v2_tool("call_skill", "skill", input={"id": "opencode"}),
-            v2_tool("call_task", "task", input={"subagent_type": "explore"},
+            # v2 names the tool `subagent` and its target in input.agent.
+            v2_tool("call_task", "subagent", input={"agent": "explore"},
                     metadata={"sessionId": "ses_child"}),
             v2_tool("call_mcp", "basic-memory_search_notes",
                     input={"query": "x"}),
@@ -525,7 +526,8 @@ def test_a_v2_message_becomes_one_model_call(host_v2, tracker):
 def test_v2_tool_entries_fill_the_specialised_tables(host_v2, tracker):
     run_v2(host_v2, tracker)
     calls = {r["tool_name"]: r for r in rows(tracker, "tool_calls")}
-    assert set(calls) == {"bash", "skill", "task", "basic-memory_search_notes"}
+    assert set(calls) == {"bash", "skill", "subagent",
+                          "basic-memory_search_notes"}
     assert all(r["status"] == "completed" for r in calls.values())
     assert all(r["duration_ms"] == 1000 for r in calls.values())
     # v2 names the skill in input.id, not input.name
@@ -536,6 +538,61 @@ def test_v2_tool_entries_fill_the_specialised_tables(host_v2, tracker):
     mcp = rows(tracker, "mcp_usage")[0]
     assert (mcp["server"], mcp["tool"]) == ("basic-memory", "search_notes")
 
+
+def test_a_v2_subagent_is_attributed_to_the_agent_it_names(tmp_path, tracker):
+    """v2's `subagent` carries the target in `input.agent`, not `subagent_type`.
+
+    Reading only the v1 key dropped 258 of 391 task calls on this host, and the
+    ones that survived were the wrong agent (`general` under-counted). Both
+    spellings must land in `agent_usage`, and the child session with them.
+    """
+    path = tmp_path / "opencode.db"
+    conn = make_host_v2(path)
+    add_session_v2(conn, "ses_v2")
+    add_message_v2(
+        conn, "msg_v2", "ses_v2",
+        content=[
+            v2_tool("call_v2", "subagent", input={"agent": "general"},
+                    metadata={"sessionId": "ses_child_v2"}),
+            v2_tool("call_v1", "task", input={"subagent_type": "explore"},
+                    metadata={"sessionId": "ses_child_v1"}),
+        ])
+    conn.commit()
+    conn.close()
+
+    run_v2(path, tracker)
+    got = {r["call_id"]: r for r in rows(tracker, "agent_usage")}
+    assert got["call_v2"]["agent_type"] == "general"
+    assert got["call_v2"]["child_session_id"] == "ses_child_v2"
+    assert got["call_v1"]["agent_type"] == "explore"
+    assert len(rows(tracker, "tool_calls")) == 2
+
+
+def test_a_task_call_that_names_no_agent_is_counted_but_is_not_drift(
+        tmp_path, tracker):
+    """The host allows a task call with no target; that is not a parse failure.
+
+    The call still belongs in `tool_calls` — it happened, and the Tools panel
+    counts calls — but there is no agent to attribute it to. Reporting it as
+    drift would put a permanent `!` on a healthy host.
+    """
+    path = tmp_path / "opencode.db"
+    conn = make_host_v2(path)
+    add_session_v2(conn, "ses_v2")
+    add_message_v2(
+        conn, "msg_v2", "ses_v2",
+        content=[v2_tool("call_bare", "subagent", input={})])
+    conn.commit()
+    conn.close()
+
+    stats = run_v2(path, tracker)
+    assert [r["call_id"] for r in rows(tracker, "tool_calls")] == ["call_bare"]
+    assert rows(tracker, "agent_usage") == []
+    counted = rows(tracker, "unparsed")
+    assert [r["reason"] for r in counted] == [sync.NO_TASK_TYPE]
+    assert stats["unparsed_this_run"] == 1
+    expected, unexpected, _ = sync.split_unparsed(counted)
+    assert (expected, unexpected) == (1, 0)
 
 def test_v2_sessions_come_from_session_v2(host_v2, tracker):
     run_v2(host_v2, tracker)
@@ -1596,22 +1653,25 @@ def test_the_status_vocabulary_is_the_hosts_and_not_a_translation():
 
 # --- which reasons are expected, and which mean the host moved -------------
 
-def test_a_holdback_deadline_is_expected_and_every_loss_is_not():
+def test_an_unnamed_call_is_expected_and_every_loss_is_not():
     """The split exists because one total held two different findings.
 
-    `part_left_running` is this reader's own deadline: a `tool` part the host never
-    settled is indexed as it stands, and the count is how many rows may be missing a
-    status or a duration. Every other reason in the vocabulary means the reader lost
-    something, which is exactly what the "!" is for — if this set ever grows to
-    include one of them, the warning stops meaning anything.
+    Two reasons are facts about the call, not about the reader:
+`part_left_running` is this reader's own deadline (a `tool` part the host never
+settled is indexed as it stands, and the count is how many rows may be missing a
+status or a duration), and `task_call_without_subagent_type` is a task call that
+named no agent — the host allows that, and the call is still in `tool_calls`.
+Every other reason means the reader lost something, which is exactly what the
+"!" is for — if this set ever grows to include one of them, the warning stops
+meaning anything.
     """
     assert sync.unparsed_is_expected(sync.HELD_GAVE_UP)
+    assert sync.unparsed_is_expected(sync.NO_TASK_TYPE)
     for reason in (f"{sync.UNKNOWN_PART_TYPE}:brand-new-thing",
                    f"{sync.UNKNOWN_MESSAGE_TYPE}:brand-new-thing",
                    sync.UNPARSEABLE_DATA, sync.UNPARSEABLE_MESSAGE,
                    sync.UNPARSEABLE_EVENT, sync.NO_TOKENS, sync.NO_TOOL_NAME,
-                   sync.NO_SKILL_NAME, sync.NO_TASK_TYPE,
-                   sync.MESSAGE_ROW_ABSENT):
+                   sync.NO_SKILL_NAME, sync.MESSAGE_ROW_ABSENT):
         assert not sync.unparsed_is_expected(reason), reason
 
 

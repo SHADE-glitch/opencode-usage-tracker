@@ -96,7 +96,12 @@ TOOL_TIME_FIELDS = frozenset({"start", "end"})
 # The two argument names this project is allowed to look at. Every other tool
 # argument is a file path, a shell command or a prompt.
 SKILL_ARG_FIELDS = frozenset({"name"})
-TASK_ARG_FIELDS = frozenset({"subagent_type"})
+# The subagent tool names its target differently in each layout: v1's `task`
+# takes `subagent_type`, v2's `subagent` takes `agent` (measured on this host:
+# `{"agent":"general","background":true,...}`). Reading only the v1 name dropped
+# every v2 call out of `agent_usage` — 258 of 391 on this machine — and reported
+# them as a format change nobody had taught the reader about.
+TASK_ARG_FIELDS = frozenset({"agent", "subagent_type"})
 SKILL_TOOL = "skill"
 # Measured on this host: 5916 completed / 82 error / 2 running out of 6000 recent
 # tool parts. ``running`` is the only state that changes after the row is
@@ -326,11 +331,16 @@ HELD_GAVE_UP = "part_left_running"
 # is named here, and every view can say which reasons are known instead of showing
 # one total that cannot be read.
 #
+# `NO_TASK_TYPE` is expected for the same kind of reason: a task call that names no
+# agent is a call the host allowed (the default agent), not a field this reader
+# failed to understand. The call is still counted in `tool_calls`; only the Agents
+# panel has nothing to attribute it to.
+#
 # Everything else in the vocabulary above stays out on purpose: `unknown_part_type:`
 # is drift by definition, and `unparseable_*`, the `*_without_*` family and
 # `step_finish_message_row_absent` each mean the reader lost something — which is
 # exactly what the "!" is for.
-KNOWN_UNCLAIMED_REASONS = frozenset({HELD_GAVE_UP})
+KNOWN_UNCLAIMED_REASONS = frozenset({HELD_GAVE_UP, NO_TASK_TYPE})
 
 
 def unparsed_is_expected(reason: str) -> bool:
@@ -586,7 +596,8 @@ def write_tool_call(conn, part, data: dict, ctx: dict | None,
         else:
             counts.bump(NO_SKILL_NAME)
     elif category == "agent":
-        agent_type = args.get("subagent_type")
+        # Both spellings, v2 first: `agent` is what the current layout sends.
+        agent_type = args.get("agent") or args.get("subagent_type")
         if isinstance(agent_type, str) and agent_type:
             meta = state.get("metadata")
             child = meta.get("sessionId") if isinstance(meta, dict) else None

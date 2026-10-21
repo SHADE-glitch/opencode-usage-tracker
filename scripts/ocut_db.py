@@ -483,6 +483,13 @@ _AGENT_NAMES_CTE = _names_cte("agent", "agent_usage", "agent_type")
 # It is not evidence of installation, so it contributes `installed = 0` -- which
 # is the honest answer, since only the host's own config says a plugin is
 # installed and this tool reads it there and nowhere else.
+#
+# `owner_plugin` is also how an MCP server owns its tools and how a provider
+# owns its model, so the arm has to say which owners are plugins: a tool or
+# command the hook reported (`source='hook'`). Without that filter the Plugins
+# panel listed `basic-memory`, `context7` and `huoshan` -- two MCP servers and a
+# provider -- as plugins with state `removed`, i.e. as things that had been
+# uninstalled. Measured on this host 2026-10-21: 3 of the panel's 4 rows.
 _PLUGIN_NAMES_CTE = (
     "WITH names AS ("
     " SELECT name, MAX(installed) AS installed, MAX(ever_used) AS ever_used"
@@ -490,7 +497,9 @@ _PLUGIN_NAMES_CTE = (
     "  SELECT name, 1 AS installed, 0 AS ever_used FROM inventory"
     " WHERE kind='plugin'"
     "  UNION"
-    "  SELECT owner_plugin, 0, 0 FROM inventory WHERE owner_plugin <> ''"
+    "  SELECT owner_plugin, 0, 0 FROM inventory"
+    "   WHERE owner_plugin <> '' AND source <> 'mcp'"
+    "     AND kind IN ('tool', 'command', 'skill', 'agent')"
     "  UNION"
     "  SELECT DISTINCT plugin, 0, 1 FROM plugin_usage WHERE plugin IS NOT NULL)"
     " GROUP BY name)")

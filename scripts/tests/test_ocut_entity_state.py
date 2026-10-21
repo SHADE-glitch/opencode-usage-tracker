@@ -312,6 +312,28 @@ def test_a_plugin_known_only_as_an_owner_is_not_installed(conn):
     assert rows["declared"] == db.ENTITY_STATE_INSTALLED
 
 
+def test_mcp_and_provider_owners_never_surface_as_plugins(conn):
+    """Regression: three of the four rows on this host's Plugins tab were not
+    plugins. An MCP tool's `owner_plugin` is its server and a model's is its
+    provider -- neither is evidence that something called `basic-memory` or
+    `huoshan` was ever installed as a plugin, so both arms named things that had
+    only ever been owners and labelled them `removed`.
+    """
+    # `install` stamps source='fixture'; these two rows are written the way the
+    # reader writes them -- an MCP tool's row is sourced 'mcp', a model's is its
+    # catalogue entry with the provider in `owner_plugin`.
+    conn.execute(
+        "INSERT OR REPLACE INTO inventory(kind, name, owner_plugin, version,"
+        " path, source) VALUES('tool', 'basic-memory_search_notes',"
+        " 'basic-memory', NULL, NULL, 'mcp')")
+    conn.execute(
+        "INSERT OR REPLACE INTO inventory(kind, name, owner_plugin, version,"
+        " path, source) VALUES('model', 'kimi-k2', 'huoshan', NULL, NULL,"
+        " 'models-dev')")
+    install(conn, "plugin", "real-plugin")
+    names = {r["plugin"] for r in db.q_plugins(conn)}
+    assert names == {"real-plugin"}, names
+
 def test_the_state_is_derived_not_stored(conn):
     """No column anywhere: the two flags are what `inventory` and the usage
     tables already say, and a third copy could only ever disagree with them.
