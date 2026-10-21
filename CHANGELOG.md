@@ -1720,3 +1720,27 @@ Cost     The state label now forgets a range: a tool used last month reads `inst
          is authenticated without a `provider` block contributes no offered models — the
          alternative was 232 providers' worth of rows nothing can call.
 Commit   28f8adf
+
+### D-083 · 2026-10-21 · fix
+
+Symptom  A model served through two providers produced two Tokens rows with the same row key
+         (the model id alone), so the table raised `DuplicateKey` as soon as both were in the
+         window. The tab also listed every model the configured provider offers, with 0 requests
+         and `-` tokens — a catalogue entry that had never answered anything.
+Change   Tokens is usage-only and keyed by `(model, provider)`: one row per pair that answered in
+         the window, no inventory union in `q_model_tokens`. The catalogues (`provider.<id>.models`
+         and the models.dev cache) stay in `inventory` for `ocut inventory`, but they no longer
+         make a Tokens row. The drill-down (`q_model_calls` / `q_model_summary`,
+         `ModelResponsesScreen`) filters on the pair, and the row key is built from the raw
+         columns (`key_columns`) rather than the display cells.
+Evidence L0 2026-10-21: `.venv/bin/python -m pytest scripts/tests -q` — 354 passed, 3 subtests
+         passed; each new case fails when its half is undone (two providers / one row key, the
+         offered-but-unused model, a retired model keeping its history). L1 the same day against
+         this machine's own database: All time returns 13 rows with 13 unique keys, and the
+         `ark-code-latest · huoshan` row opens 200 steps of its own provider.
+Cost     An offered-but-unused model no longer appears on Tokens (the previous round's feature,
+         withdrawn by request); `ocut inventory --kind model` still lists the catalogue. Unlike
+         CodeBuddy, OpenCode records only `modelID` / `providerID` — there is no upstream
+         "real model" field — so for a third-party provider the configured id is the only name
+         the host exposes, and this reader cannot substitute the model that answered.
+Commit   65e4591
