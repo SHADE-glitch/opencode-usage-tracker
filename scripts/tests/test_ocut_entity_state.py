@@ -88,6 +88,15 @@ def used(c, kind, name, ts=1_700_000_000_000, n=1):
     c.commit()
 
 
+def model_use(c, model, provider, call_id=None, ts=1_700_000_000_000):
+    """One step that names a model and the provider that served it."""
+    c.execute(
+        "INSERT INTO model_calls(call_id, model, provider, prompt_tokens,"
+        " completion_tokens, total_tokens, ts) VALUES(?,?,?,10,5,15,?)",
+        (call_id or f"model-{model}-{provider}-{ts}", model, provider, ts))
+    c.commit()
+
+
 def states(c, kind):
     """{name: label} for every row the panel would show.
 
@@ -419,13 +428,14 @@ def test_the_headless_plugins_list_prints_a_state_per_row(conn):
     assert printed["alpha"] == db.ENTITY_STATE_INSTALLED, body
     assert printed["retired"] == db.ENTITY_STATE_REMOVED, body
 
-# --- the Tokens panel lists what the host offers ---------------------------
+# --- the Tokens panel lists what answered, not what is configured -----------
 
-def test_an_offered_model_with_no_requests_still_gets_a_row(conn):
-    """The Tokens panel is a list, like every other entity panel: a model the
-    host's config declares but that has not answered yet shows 0 requests and
-    `-` tokens, instead of existing only from its first response onwards. A model
-    that *has* answered is listed once, not twice.
+def test_a_configured_model_with_no_requests_gets_no_row(conn):
+    """A model the host's config offers is a catalogue entry, not a usage row.
+
+    It has no request, no token and no route claim to make, so listing it only
+    produced zero rows for models nobody had called. The usage side still lists
+    a model that *has* answered, exactly once.
     """
     install(conn, "model", "ark-code-latest", owner="huoshan")
     install(conn, "model", "used-model", owner="opencode")
@@ -435,9 +445,31 @@ def test_an_offered_model_with_no_requests_still_gets_a_row(conn):
         "'opencode',10,5,15,1700000000000)")
     conn.commit()
     rows = {r["model"]: r for r in db.q_model_tokens(conn)}
-    assert sorted(rows) == ["ark-code-latest", "used-model"], sorted(rows)
-    idle = rows["ark-code-latest"]
-    assert (idle["provider"], idle["responses"]) == ("huoshan", 0)
-    assert idle["total_tokens"] is None, "an unused model is '-', never a 0"
+    assert sorted(rows) == ["used-model"], sorted(rows)
     assert rows["used-model"]["responses"] == 1
     assert rows["used-model"]["total_tokens"] == 15
+
+
+def test_a_model_that_left_the_config_keeps_its_history(conn):
+    """The config is a snapshot; the steps it produced are the record.
+
+    A model removed from the host config must keep the totals its own steps
+    earned, or yesterday's numbers would move when the config changes.
+    """
+    model_use(conn, "retired-model", "huoshan")
+    rows = {r["model"]: r for r in db.q_model_tokens(conn)}
+    assert rows["retired-model"]["responses"] == 1
+
+
+def test_one_model_on_two_providers_is_two_rows(conn):
+    """The row key carries the provider, so two providers cannot collide.
+
+    Keys used to be the model name alone; a model served through two providers
+    made ``Tokens`` raise ``DuplicateKey`` as soon as both were in the window.
+    """
+    install(conn, "model", "shared", owner="p1")
+    install(conn, "model", "shared", owner="p2")
+    model_use(conn, "shared", "p1")
+    model_use(conn, "shared", "p2", ts=1_700_000_000_001)
+    rows = {(r["model"], r["provider"]) for r in db.q_model_tokens(conn)}
+    assert rows == {("shared", "p1"), ("shared", "p2")}

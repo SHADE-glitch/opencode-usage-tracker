@@ -146,6 +146,13 @@ code; the schema version tracks the data. Never conflate them.
   `sessions` is the host's per-session rollup. They are one measurement at two levels, so the
   interface shows them beside each other and never adds them.
   Guard: `test_two_granularities_of_the_same_measurement_agree`.
+- **Tokens lists usage, not the catalogue.** A model row exists only for a
+  `(model, provider)` that answered in the tab's window. `inventory` still carries the
+  models each configured provider offers (that is what `ocut inventory` answers), but an
+  unused one has no request, token or route claim and does not get a zero row. History is
+  the durable side, so a model removed from the config keeps its rows. The row key is
+  `(model, provider)`; keying on the name alone raised `DuplicateKey` when two providers
+  served one model id.
 - **A schema or view change requires a `SCHEMA_VERSION` bump, and the bump clears the sync
   cursors** so the new shape is re-read instead of trusted. A database written by a *newer*
   build is left alone and reported as newer, never rewritten. There is deliberately no

@@ -206,9 +206,11 @@ a passive reader has no evidence a plugin or command ran unless the hook wrote i
 The **Tools / Skills / Agents / Plugins / MCP** tabs are one row per entity, with calls,
 success, average duration and last use; `enter` on a row opens that entity's recent-call
 history. The **Tokens** tab is per-model token totals from the host's own step records —
-and a model the host's config offers but that has not answered yet still gets a row, with
-`0` requests and `-` in every token cell. The **Usage** tab is the request log for the
-window you pick. Each tab keeps its own time window (a preset like `7d`, or a custom
+one row per `(model, provider)` that answered, never a model the config merely offers
+(a catalogue entry has no request or token to report, and the id in the config is a route
+name, not necessarily the model behind it). History is the durable side: a model removed
+from the config keeps the rows its own steps earned. The **Usage** tab is the request log
+for the window you pick. Each tab keeps its own time window (a preset like `7d`, or a custom
 span), so changing one tab's window never moves another's.
 
 The last column of every entity tab is **state**, and it describes the row it sits on:
@@ -377,8 +379,8 @@ Views: `v_tools`, `v_skills`, `v_agents`, `v_mcp`, `v_plugins`.
 - `inventory` — what is installed, from the host's directories and config: skills, agents,
   commands, MCP servers, plugins, providers, the models each configured provider offers,
   and the tool ids each plugin registers. A `model` row's `owner_plugin` is its provider
-  id, which is how the Tokens tab matches an offered-but-unused model to the pair the
-  usage tables record.
+  id. This catalogue answers `ocut inventory`; it is **not** a Tokens row — Tokens lists
+  only models that answered, so an offered-but-unused model does not appear there.
 - `plugin_usage` — one row per plugin tool/command call the hook saw. This is the one
   table fed from outside the host database.
 - `plugin_surface` — the tool and command ids each plugin registers, as reported by the

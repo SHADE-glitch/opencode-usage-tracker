@@ -190,8 +190,10 @@ tab 栏与页脚就是全部按键面：
 
 **Tools / Skills / Agents / Plugins / MCP** 五个 tab 一行一个实体，列出调用次数、成功数、
 平均耗时与最近使用；在某行按 `enter` 打开该实体的最近调用历史。**Tokens** tab 是宿主自己
-每步记录汇总出的按模型 token 合计——宿主配置里声明过、但还没回答过请求的模型也会占一行，
-`0` 次请求、每个 token 格都是 `-`。**Usage** tab 是你所选窗口的请求日志。每个 tab 各自保留
+每步记录汇总出的按模型 token 合计——每个真正回答过的 `(模型, provider)` 一行，配置里只是
+「提供」但没回答过的模型不占行（目录项没有请求也没有 token，而配置里的 id 是路由名，未必
+等于背后真正回答的模型）。历史才是持久的一侧：从配置里移除的模型保留它自己挣到的行。
+**Usage** tab 是你所选窗口的请求日志。每个 tab 各自保留
 自己的时间窗口（`7d` 这类预设，或一段自定义区间），改一个 tab 的窗口不会动另一个。
 
 每个实体 tab 的最后一列是 **state**，说的是**这一行自己**：只有该行在**本 tab 窗口内**有调用时
@@ -340,8 +342,8 @@ OpenCode 自己的状态（只读——从不以写入方式打开）
   `model_calls` 是同一测量的两个粒度，**绝不相加**。
 - `inventory`：装了什么，读自宿主的目录与配置：skills、agents、commands、MCP 服务、插件、
   provider、每个已配置 provider 提供的模型，以及每个插件注册的工具 id。`model` 行的
-  `owner_plugin` 就是它的 provider id，Tokens tab 靠这一点把「提供了但没用过」的模型与用量表
-  记录的那一对对上。
+  `owner_plugin` 就是它的 provider id。这份目录服务于 `ocut inventory`，**不是** Tokens 行——
+  Tokens 只列真正回答过的模型，所以「提供了但没用过」的模型不会出现在那里。
 - `plugin_usage`：hook 看到的每次插件工具/命令调用一行。这是唯一一张数据来自宿主库之外的表。
 - `plugin_surface`：每个插件加载时注册的工具与命令 id，由 hook 上报；`ocut sync` 在文件系统重写
   之后把它折回 `inventory`，并丢掉已不再安装的插件留下的行。

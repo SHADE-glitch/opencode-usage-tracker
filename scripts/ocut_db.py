@@ -1156,7 +1156,8 @@ def q_history(conn, kind, name, limit=50, start_ts=None, end_ts=None, server=Non
     ).fetchall()
 
 
-def q_model_calls(conn, limit=50, model=None, start_ts=None, end_ts=None):
+def q_model_calls(conn, limit=50, model=None, start_ts=None, end_ts=None,
+                  provider=None):
     """Recent per-step usage rows (newest first).
 
     One row per OpenCode ``step-finish`` part — the host's own usage record for
@@ -1166,10 +1167,12 @@ def q_model_calls(conn, limit=50, model=None, start_ts=None, end_ts=None):
     says which was used ('host' | 'derived' | NULL). ``prompt_total_tokens`` is
     the prompt with the cache read added back. The window is half-open; both
     bounds ``None`` is all-time.
+
+    ``model`` + ``provider`` scope the drill-down to the exact Tokens row that
+    was opened; the provider comes from the row key, so two providers serving
+    one model id cannot share a screen.
     """
-    conds: list = []
-    if model:
-        conds.append(("model = ?", model))
+    conds = _model_provider_conds(model, provider)
     conds += _time_conds(start_ts, end_ts, col="ts")
     sql = (
         "SELECT call_id, message_id, session_id, project, directory, agent,"
@@ -1262,15 +1265,16 @@ def q_plugin_summary(conn, plugin, start_ts=None, end_ts=None):
     ).fetchone()
 
 
-def q_model_summary(conn, model, start_ts=None, end_ts=None):
-    """Windowed token rollup for one model — the drill-down's header numbers.
+def q_model_summary(conn, model, start_ts=None, end_ts=None, provider=None):
+    """Windowed token rollup for one (model, provider) — the drill-down header.
 
     Same expressions the Tokens tab and the Usage page use, so the header can
     never disagree with the row it was opened from. ``total_tokens`` is the host's
     own per-step sum (or the five-part fallback); ``prompt_total_tokens`` is the
     prompt with the cache read added back.
     """
-    conds = [("model = ?", model)] + _time_conds(start_ts, end_ts, col="ts")
+    conds = _model_provider_conds(model, provider)
+    conds += _time_conds(start_ts, end_ts, col="ts")
     where = " WHERE " + " AND ".join(c for c, _ in conds)
     return conn.execute(
         "SELECT COUNT(*) AS responses,"
@@ -1351,6 +1355,14 @@ def q_call_detail(conn, kind, key):
 def q_model_tokens(conn, start_ts=None, end_ts=None):
     """Per-model token totals, one row per (model, provider) the host reported.
 
+    Usage only: a pair enters this table by answering a step, never by being
+    listed in the host's config. The configured list is a catalogue of model ids
+    the provider *offers* — an unused one has no request, no token and no route
+    claim to make — and listing it produced zero rows for models nobody had
+    called. The catalogue stays in ``inventory`` for ``ocut inventory``; it is
+    not a usage record. A model that leaves the config keeps the rows its own
+    steps earned, because those rows are the history.
+
     ``SUM`` skips NULLs, so a step recorded with ``usage_available=0`` adds
     nothing instead of a fabricated zero.
 
@@ -1365,7 +1377,7 @@ def q_model_tokens(conn, start_ts=None, end_ts=None):
     versus "how much did the model read").
     """
     where, params = _time_filter(start_ts, end_ts)
-    used = (
+    return conn.execute(
         "SELECT model, provider,"
         " COUNT(*) AS responses,"
         " SUM(CASE WHEN usage_available=1 THEN 1 ELSE 0 END) AS with_usage,"
@@ -1381,30 +1393,25 @@ def q_model_tokens(conn, start_ts=None, end_ts=None):
         # Grouped by (model, provider): the same model id can be served through
         # two configured providers, and those must not merge.
         f" FROM model_calls{where}"
-        " GROUP BY model, provider")
-    # The list is installed ∪ used-in-window, like every other panel: the models
-    # the host's own config offers are inventoried on each sync, and one that has
-    # not answered in this window still gets a zero row instead of vanishing.
-    # ``owner_plugin`` carries the provider id for a model row (the only owner a
-    # model has). A pair already present in the window is not repeated; the same
-    # model id on another provider keeps its own row, because the two routes are
-    # different measurements.
-    available = (
-        "SELECT i.name AS model, NULLIF(i.owner_plugin, '') AS provider,"
-        " 0 AS responses, 0 AS with_usage,"
-        " NULL AS prompt_tokens, NULL AS completion_tokens,"
-        " NULL AS reasoning_tokens, NULL AS cache_read, NULL AS cache_write,"
-        " NULL AS cost, NULL AS total_tokens, NULL AS total_tokens_source,"
-        " NULL AS prompt_total_tokens"
-        " FROM inventory i WHERE i.kind='model'"
-        " AND NOT EXISTS (SELECT 1 FROM used u WHERE u.model = i.name"
-        "  AND COALESCE(u.provider, '') = COALESCE(i.owner_plugin, ''))")
-    return conn.execute(
-        f"WITH used AS ({used}) SELECT * FROM ("
-        f" SELECT * FROM used UNION ALL {available}"
-        ") ORDER BY responses DESC, model, provider",
+        " GROUP BY model, provider"
+        " ORDER BY responses DESC, model, provider",
         params,
     ).fetchall()
+
+
+def _model_provider_conds(model=None, provider=None):
+    """Predicates scoping a model query to one Tokens row, or ``[]`` for all.
+
+    The row key carries the stored provider, and ``""`` is the sentinel for a
+    NULL one (a step whose message named no provider). ``IS ?`` compares like
+    ``=`` but also matches NULL, so the empty sentinel needs no second spelling.
+    """
+    conds: list = []
+    if model:
+        conds.append(("model = ?", model))
+    if provider is not None:
+        conds.append(("provider IS ?", provider or None))
+    return conds
 
 
 # --- usage statistics (calendar-day windows) -------------------------------
