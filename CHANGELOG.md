@@ -1773,3 +1773,44 @@ Cost     The dashboard's `Incomplete` panel is gone by design — anyone who rea
          reads two. `Cost` formats to four decimals; a model priced below $0.00005 still rounds to $0.0000
          rather than switching to scientific notation.
 Commit   a9e92b3
+
+### D-085 · 2026-10-21 · fix
+
+Symptom  A snapshot chosen for restore was trusted before it was opened: a damaged or empty file
+         could replace the live database, and the snapshot being restored could be pruned by its
+         own retention pass. A database written by a newer build was opened and written before its
+         version was checked, and a schema upgrade ran its DDL before taking a snapshot. On the
+         read path, `q_tools` spent ~600 ms on the live file re-scanning `tool_calls` once per
+         named row. The TUI then listed the installed union by default (burying the rows that
+         ran), had no per-tab sort or filter, grouped MCP by tool while OpenCode configures
+         servers, and called the model/request pages Tokens/Usage. Headless reports had drifted:
+         `export` skipped tables and views, `show mcp` merged same-named tools across servers,
+         `health` mislabelled sidecar and marker rows, and `ocut plugins` printed fewer columns
+         than the tab it claimed to mirror.
+Change   `restore()` validates the source read-only (quick_check plus the tables the schema
+         requires), checkpoints the live file, snapshots it with the source protected from
+         pruning, copies through a temp file, validates the target, and only then replaces the
+         live database; every failure leaves it unchanged. `ensure_schema()` reads the stored
+         version before DDL, returns `newer` without a write, and snapshots `pre-schema-upgrade`
+         before an older file is migrated; `sync` preflights the same check. `q_tools` uses one
+         pre-aggregating CTE and counts `running` + `streaming` as `run`. The TUI starts each
+         entity tab on rows used in its own window with `a` for the full union, adds `o` sort
+         and `/` filter, moves MCP to server -> tool -> history, renames Tokens/Usage to
+         Models/Requests, orders Requests metrics-first (hit rate before the raw cache counts,
+         project capped, full value in the detail), and restores the top bar's preset Select as
+         a separate control beside the custom date picker. Headless: `export` enumerates
+         `sqlite_master`, `show` scopes MCP by `--server`, `health` names schema and cursor
+         states, and `plugins` carries tools/last-used/state in the tab's order.
+Evidence L0 2026-10-21: `.venv/bin/python -m pytest scripts/tests -q` and
+         `python3 -m pytest scripts/tests -q` — 383 passed, 3 subtests passed each;
+         `bash -n bin/ocut` clean. L1 on this machine's own database: the MCP tab opens
+         2 servers, `context7` lists its 2 tools, and each tool opens its own history;
+         Requests shows 100 of 13,846 with the hit rate and project visible at 160
+         columns; the top bar's Select and Custom… controls follow the active tab.
+Cost     Tabs are renamed and reordered, the default list hides installed-but-idle rows
+         (`a` is the full union), and MCP takes one more keypress to reach a tool's history.
+         The state column now exists only on censused tabs (Skills, Plugins, MCP); headless
+         Tools/Agents keep `not reported` so scripts can still tell absence from `removed`.
+         A custom window is shown as `Custom…` in the Select and as its span on the button,
+         because one control cannot carry both without printing the range twice.
+Commit   c2ac1e9
