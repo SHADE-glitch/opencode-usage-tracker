@@ -23,8 +23,8 @@ DISPATCHER = REPO / "bin" / "ocut"
 # Every headless route the dispatcher knows about. A name added to `bin/ocut`'s
 # case list without landing here is a route no test has ever walked.
 ROUTES = ("tui", "sync", "stats", "tools", "skills", "agents", "plugins", "mcp",
-          "models", "show", "recent", "inventory", "export", "health", "format",
-          "backup", "restore", "vacuum")
+          "models", "modes", "sessions", "show", "recent", "inventory", "export",
+          "health", "format", "backup", "restore", "vacuum")
 
 VALUE_FLAGS = ("--db", "--kind", "--limit", "--host-db", "--host-config",
                "--host-home", "--plugin-events")

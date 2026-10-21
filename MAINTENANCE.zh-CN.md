@@ -192,7 +192,7 @@ bash -n bin/ocut                                       # 分发器仍能解析
 
 ## 7. 已知限制
 
-M1–M17，含复现说明：
+M1–M18，含复现说明：
 [README.zh-CN.md §9](README.zh-CN.md#known-limitations) /
 [README.md](README.md#-known-limitations)。
 维护时最容易踩到的几条：**M1**（宿主是事实来源，它从没落盘的调用就是不可见）、**M3**（插件用量需要

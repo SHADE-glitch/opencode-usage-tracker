@@ -66,7 +66,8 @@ def tracker(tmp_path):
 
 READ_ONLY = [
     ["stats"], ["tools"], ["skills"], ["agents"], ["mcp"], ["plugins"],
-    ["models"], ["recent"], ["inventory"], ["export"], ["health"],
+    ["models"], ["modes"], ["sessions"], ["recent"], ["inventory"],
+    ["export"], ["health"],
     ["show", "tool", "read"], ["show", "mcp", "search"],
     ["format"], ["restore"],
 ]

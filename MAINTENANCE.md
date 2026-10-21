@@ -230,7 +230,7 @@ Recorded so the next reader does not "helpfully" fix them back into a broken sta
 
 ## 7. Known limitations
 
-M1–M17, with reproduction notes:
+M1–M18, with reproduction notes:
 [README.zh-CN.md §9](README.zh-CN.md#known-limitations) /
 [README.md](README.md#-known-limitations).
 The ones most likely to bite during maintenance: **M1** (the host is the source of truth;

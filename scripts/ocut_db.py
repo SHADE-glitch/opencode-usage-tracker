@@ -475,7 +475,37 @@ def _names_cte(kind: str, table: str, column: str) -> str:
             " GROUP BY name)")
 
 
-_TOOL_NAMES_CTE = _names_cte("tool", "tool_calls", "tool_name")
+# Tool rows need one thing the generic helper above cannot say: OpenCode renamed
+# two builtin tools between layouts -- v1's `bash` is v2's `shell`, and v1's
+# `task` is v2's `subagent` -- so history holds both spellings of the same tool,
+# and one panel row per spelling reads as two tools. The canonical name is the
+# CURRENT one (what a running v2 host emits); the raw `tool_calls` rows keep the
+# spelling the host wrote, and the single-call detail still shows it.
+TOOL_CANONICAL = {"bash": "shell", "task": "subagent"}
+
+
+def _canonical_name_sql(column: str) -> str:
+    """A SQL expression mapping `column` through TOOL_CANONICAL.
+
+    The pairs are this file's own constants, never user input, so inlining them
+    is safe; the point of the helper is that the mapping exists in exactly one
+    place per query that needs it.
+    """
+    cases = " ".join(f"WHEN '{old}' THEN '{new}'"
+                     for old, new in TOOL_CANONICAL.items())
+    return f"CASE {column} {cases} ELSE {column} END"
+
+
+_TOOL_NAMES_CTE = (
+    "WITH names AS ("
+    " SELECT name, MAX(installed) AS installed, MAX(ever_used) AS ever_used"
+    " FROM ("
+    "  SELECT " + _canonical_name_sql("name") + " AS name, 1 AS installed, 0 AS ever_used"
+    "   FROM inventory WHERE kind='tool'"
+    "  UNION"
+    "  SELECT DISTINCT " + _canonical_name_sql("tool_name") + ", 0, 1"
+    "   FROM tool_calls WHERE tool_name IS NOT NULL)"
+    " GROUP BY name)")
 _SKILL_NAMES_CTE = _names_cte("skill", "skill_usage", "skill")
 _AGENT_NAMES_CTE = _names_cte("agent", "agent_usage", "agent_type")
 # A plugin has a third arm the other kinds do not: `owner_plugin` names a plugin
@@ -615,7 +645,9 @@ SELECT n.name AS tool_name,
        MAX(n.installed) AS installed,
        MAX(n.ever_used) AS ever_used
 FROM names n
-LEFT JOIN tool_calls c ON c.tool_name = n.name
+LEFT JOIN (SELECT call_id, status, ts,
+         {_canonical_name_sql('tool_name')} AS tool_name
+         FROM tool_calls) c ON c.tool_name = n.name
 GROUP BY n.name;
 
 DROP VIEW IF EXISTS v_skills;
@@ -987,7 +1019,12 @@ def q_tools(conn, limit=None, start_ts=None, end_ts=None):
            " COUNT(DISTINCT c.project) AS projects,"
            " COUNT(DISTINCT c.session_id) AS sessions,"
            " MAX(n.installed) AS installed, MAX(n.ever_used) AS ever_used"
-           " FROM names n LEFT JOIN tool_calls c ON c.tool_name = n.name"
+           # The alias map lives in the join's inner select: the raw table keeps
+           # the spelling the host wrote; the panel counts one row per tool.
+           " FROM names n LEFT JOIN"
+           " (SELECT call_id, status, ts, duration_ms, project, session_id,"
+           "         " + _canonical_name_sql("tool_name") + " AS tool_name"
+           "  FROM tool_calls) c ON c.tool_name = n.name"
            f"{on_time} GROUP BY n.name ORDER BY calls DESC, n.name")
     if limit:
         sql += f" LIMIT {int(limit)}"
@@ -1037,6 +1074,30 @@ def q_agents(conn, limit=None, start_ts=None, end_ts=None):
         sql += f" LIMIT {int(limit)}"
     return conn.execute(sql, params).fetchall()
 
+
+def q_child_sessions(conn, agent_type, limit=50, start_ts=None, end_ts=None):
+    """The child sessions one agent type's task calls spawned, newest first.
+
+    OpenCode records a subagent run as its own session row (`parent_id`,
+    `is_subagent`) and links it from the call through `child_session_id`. The
+    host bills the parent for the child's steps — measured on this host, all
+    457 child sessions carry `cost` 0 — so the child's own token rollup is the
+    only usage evidence it has, and this query is how the Agents drill-down
+    reaches it. A task call whose child never got a session row (the host never
+    wrote one) has nothing to show here; that is the join, not a filter.
+    """
+    conds = [("a.agent_type = ?", agent_type)] + _time_conds(start_ts, end_ts, col="a.ts")
+    where = " WHERE " + " AND ".join(c for c, _ in conds)
+    sql = (
+        "SELECT s.session_id, s.started_at, s.ended_at,"
+        " (s.ended_at - s.started_at) AS duration_ms,"
+        " s.agent, s.model, s.provider, s.directory, s.project,"
+        " s.tokens_input, s.tokens_output, s.tokens_reasoning,"
+        " s.tokens_cache_read, s.tokens_cache_write, s.cost,"
+        " a.ts AS called_at, a.call_id"
+        " FROM agent_usage a JOIN sessions s ON s.session_id = a.child_session_id"
+        f"{where} ORDER BY a.ts DESC LIMIT {int(limit)}")
+    return conn.execute(sql, _cond_params(conds)).fetchall()
 
 def q_mcp(conn, limit=None, start_ts=None, end_ts=None):
     """One row per (server, tool) pair, from the union of configured and used.
@@ -1132,6 +1193,18 @@ _HISTORY_TABLE = {
 }
 
 
+def _cond_params(conds):
+    """Flatten ``[(sql, param | params)]`` pairs into one positional list.
+
+    Most conditions carry a single parameter, but a tool drill-down searches
+    both spellings of a renamed tool (TOOL_CANONICAL) and its ``IN`` clause
+    carries a tuple. Two spellings of the same flattening would drift apart.
+    """
+    out = []
+    for _, p in conds:
+        out.extend(p if isinstance(p, (tuple, list)) else [p])
+    return out
+
 def _history_conds(kind, name, server, start_ts, end_ts):
     """The WHERE pieces one entity shares between the list and its header counts.
 
@@ -1142,7 +1215,22 @@ def _history_conds(kind, name, server, start_ts, end_ts):
     be about the same thing, so the pair is a condition, not a display hint.
     """
     table, col = _HISTORY_TABLE[kind]
-    conds = [(f"{col} = ?", name)]
+    if kind == "tool":
+        # A canonical tool row is the history of both spellings (TOOL_CANONICAL):
+        # the panel merged them, so a drill-down keyed on one spelling that
+        # showed only that spelling would disagree with the row that opened it.
+        spellings = {name}
+        for old, new in TOOL_CANONICAL.items():
+            if name in (old, new):
+                spellings |= {old, new}
+        if len(spellings) > 1:
+            ordered = sorted(spellings)
+            conds = [(f"{col} IN ({','.join('?' * len(ordered))})",
+                      tuple(ordered))]
+        else:
+            conds = [(f"{col} = ?", name)]
+    else:
+        conds = [(f"{col} = ?", name)]
     if kind == "mcp" and server is not None:
         conds.append(("server = ?", server))
     return table, conds + _time_conds(start_ts, end_ts, col="ts")
@@ -1161,7 +1249,7 @@ def q_history(conn, kind, name, limit=50, start_ts=None, end_ts=None, server=Non
     return conn.execute(
         "SELECT ts, project, session_id, status, duration_ms, call_id"
         f" FROM {table}{where} ORDER BY ts DESC LIMIT ?",
-        [p for _, p in conds] + [int(limit)],
+        _cond_params(conds) + [int(limit)],
     ).fetchall()
 
 
@@ -1231,7 +1319,7 @@ def q_entity_summary(conn, kind, name, start_ts=None, end_ts=None, server=None):
         " COUNT(DISTINCT project) AS projects,"
         " COUNT(DISTINCT session_id) AS sessions"
         f" FROM {table}{where}",
-        [p for _, p in conds],
+        _cond_params(conds),
     ).fetchone()
 
 
@@ -1250,7 +1338,7 @@ def q_plugin_history(conn, plugin, limit=50, start_ts=None, end_ts=None):
         " s.project, p.call_id"
         f" FROM plugin_usage p LEFT JOIN sessions s ON s.session_id = p.session_id"
         f"{where} ORDER BY p.ts DESC LIMIT ?",
-        [p for _, p in conds] + [int(limit)],
+        _cond_params(conds) + [int(limit)],
     ).fetchall()
 
 
@@ -1828,6 +1916,57 @@ def q_usage_model_stats(conn, start_ts, end_ts, order_by="total_tokens"):
     ).fetchall()
 
 
+def q_mode_stats(conn, start_ts=None, end_ts=None, by="agent", limit=None):
+    """Model steps grouped by the OpenCode agent that ran them, or by variant.
+
+    ``model_calls.agent`` is the host's own per-step record of *which agent*
+    the step belonged to — the session modes (`build`, `plan`) and the
+    subagent types (`general`, `explore`, …) in one column, which is exactly
+    the question "where did the tokens actually go". ``variant`` is the
+    reasoning-effort label the message carried (`max`, `xhigh`, …). Both are
+    OpenCode fields CodeBuddy has no counterpart for, which is why this
+    grouping exists here and not in the sibling tracker.
+
+    Ordered by `cost` first: the modes are a money question, and a mode that
+    answered with no usage record (cost NULL) still shows its steps. The
+    ``by`` column is whitelisted, never interpolated from input.
+    """
+    if by not in ("agent", "variant"):
+        raise ValueError(f"unknown mode grouping: {by!r}")
+    where, params = _time_filter(start_ts, end_ts)
+    sql = (
+        f"SELECT COALESCE({by}, '-') AS mode,"
+        " COUNT(*) AS steps,"
+        " SUM(CASE WHEN usage_available=1 THEN 1 ELSE 0 END) AS with_usage,"
+        " SUM(prompt_tokens) AS prompt_tokens,"
+        " SUM(completion_tokens) AS completion_tokens,"
+        " SUM(reasoning_tokens) AS reasoning_tokens,"
+        " SUM(cache_read) AS cache_read, SUM(cache_write) AS cache_write,"
+        f" {_AGG_TOTAL_EXPR} AS total_tokens,"
+        " SUM(cost) AS cost"
+        f" FROM model_calls{where}"
+        f" GROUP BY {by} ORDER BY cost DESC, steps DESC, mode")
+    if limit:
+        sql += f" LIMIT {int(limit)}"
+    return conn.execute(sql, params).fetchall()
+
+
+def q_subagent_share(conn, start_ts=None, end_ts=None) -> dict:
+    """Sessions in the window split by `is_subagent` — the Dashboard KPI.
+
+    OpenCode records a subagent run as a session of its own, and on this host
+    they are the majority (457 of 707). One "sessions" count hides that, so
+    the share is its own panel: `sessions` is the window's total,
+    `subagents` the child rows. Windowed on `started_at`, like Sessions
+    everywhere.
+    """
+    where, params = _time_filter(start_ts, end_ts, col="started_at")
+    row = conn.execute(
+        "SELECT COUNT(*) AS sessions,"
+        " COALESCE(SUM(is_subagent), 0) AS subagents"
+        f" FROM sessions{where}", params).fetchone()
+    return dict(row)
+
 def q_usage_activity(conn, start_ts=None, end_ts=None) -> dict:
     """Windowed tool-runtime rollup for the Dashboard's "more metrics" panel.
 
@@ -1871,6 +2010,43 @@ def q_usage_daily(conn, start_ts=None, end_ts=None):
         params,
     ).fetchall()
 
+
+def q_usage_cost_daily(conn, start_ts=None, end_ts=None):
+    """Model-step cost per LOCAL calendar day, oldest first — the cost sparkline.
+
+    The calls-per-day sparkline counts `tool_calls`; this one sums the host's
+    own per-step `cost` over `model_calls`, the same money the Cost panel
+    shows, bucketed the same local-day way so the two series line up. Days
+    with no steps are absent — the caller fills the gaps.
+    """
+    where, params = _time_filter(start_ts, end_ts)
+    return conn.execute(
+        "SELECT strftime('%Y-%m-%d', ts / 1000, 'unixepoch', 'localtime') AS day,"
+        " SUM(cost) AS cost"
+        f" FROM model_calls{where}"
+        " GROUP BY day ORDER BY day",
+        params,
+    ).fetchall()
+
+
+def q_sessions(conn, limit=30, start_ts=None, end_ts=None):
+    """Recent sessions, newest first — the `ocut sessions` report.
+
+    One row per session the host recorded, with what it keeps about each:
+    the agent mode it ran under, the model, the directory, the token rollup
+    and `cost`. `is_subagent` rides along unfiltered: a subagent run IS a
+    session here, and hiding 457 of 707 rows would misread the day. The
+    caller shortens `directory` for display; the stored value stays whole.
+    """
+    where, params = _time_filter(start_ts, end_ts, col="started_at")
+    sql = (
+        "SELECT session_id, project, directory, agent, model, provider,"
+        " parent_id, is_subagent, started_at, ended_at,"
+        " (ended_at - started_at) AS duration_ms,"
+        " tokens_input, tokens_output, tokens_reasoning,"
+        " tokens_cache_read, tokens_cache_write, cost"
+        f" FROM sessions{where} ORDER BY started_at DESC LIMIT {int(limit)}")
+    return conn.execute(sql, params).fetchall()
 
 def q_inventory(conn, kind=None):
     sql = "SELECT * FROM inventory"

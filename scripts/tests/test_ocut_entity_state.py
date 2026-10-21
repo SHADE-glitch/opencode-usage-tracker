@@ -383,6 +383,145 @@ def test_v_plugins_counts_the_four_kinds_a_plugin_can_own(conn):
 
 # --- the headless surface ---------------------------------------------------
 
+# --- the OpenCode-only dimensions -------------------------------------------
+
+def tool_use(c, name, ts=1_700_000_000_000, n=1, status="completed"):
+    """Raw tool_calls rows under the spelling the host wrote — no aliasing."""
+    for i in range(n):
+        c.execute(
+            "INSERT OR REPLACE INTO tool_calls(call_id, tool_name, category,"
+            " status, ts) VALUES(?,?,?,?,?)",
+            (f"tool-{name}-{ts}-{i}", name, "builtin", status, ts))
+    c.commit()
+
+
+def step_use(c, call_id, agent="build", variant="max", cost=None,
+             ts=1_700_000_000_000, model="model-x", provider="vendor"):
+    """One model step under one (agent, variant) pair, the way the host writes it."""
+    c.execute(
+        "INSERT OR REPLACE INTO model_calls(call_id, model, provider, agent,"
+        " variant, prompt_tokens, completion_tokens, cache_read, cache_write,"
+        " cost, ts, usage_available) VALUES(?,?,?,?,?,?,?,?,?,?,?,1)",
+        (call_id, model, provider, agent, variant, 10, 5, 2, 1, cost, ts))
+    c.commit()
+
+
+def session_row(c, sid, *, started=1_700_000_000_000, ended=None,
+                agent="build", is_subagent=0, directory="/home/u/proj",
+                tokens=(100, 20, 0, 30, 5)):
+    c.execute(
+        "INSERT OR REPLACE INTO sessions(session_id, project, directory, agent,"
+        " model, provider, parent_id, is_subagent, started_at, ended_at, cost,"
+        " tokens_input, tokens_output, tokens_reasoning, tokens_cache_read,"
+        " tokens_cache_write, host_version)"
+        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (sid, "p1", directory, agent, "model-x", "vendor", None, is_subagent,
+         started, ended, 0.0, *tokens, "2.0.32"))
+    c.commit()
+
+
+def test_a_renamed_tool_is_one_row_keyed_by_its_current_name(conn):
+    """v1's `bash` is v2's `shell` (TOOL_CANONICAL): one panel row, both histories.
+
+    Two spellings of one tool read as two tools — the older one looks retired
+    while the newer looks new. The merge keys the row by the CURRENT name, the
+    raw `tool_calls` rows keep the spelling the host wrote, and a drill-down
+    opened from either spelling returns both.
+    """
+    tool_use(conn, "bash", ts=1_700_000_000_000, n=3)
+    tool_use(conn, "shell", ts=1_700_000_100_000, n=2)
+    rows = db.q_tools(conn)
+    assert [(r["tool_name"], r["calls"]) for r in rows] == [("shell", 5)]
+    v = [tuple(r)[:2] for r in conn.execute(
+        "SELECT tool_name, calls FROM v_tools")]
+    assert v == [("shell", 5)]
+    for spelling in ("bash", "shell"):
+        assert len(db.q_history(conn, "tool", spelling, limit=50)) == 5, spelling
+    # The raw record is untouched: the single-call detail still shows which
+    # spelling the host wrote.
+    raw = {r[0] for r in conn.execute("SELECT tool_name FROM tool_calls")}
+    assert raw == {"bash", "shell"}
+
+
+def test_mode_stats_group_steps_by_the_host_agent(conn):
+    """`model_calls.agent` answers "where did the tokens go" — grouped, not lost.
+
+    A subagent's steps carry the subagent's name; the session modes carry
+    theirs. Cost orders the table (it is a money question) and an unknown
+    grouping is refused, never silently treated as a column.
+    """
+    step_use(conn, "s1", agent="build", cost=0.5)
+    step_use(conn, "s2", agent="build", cost=0.25)
+    step_use(conn, "s3", agent="general", cost=0.0)
+    step_use(conn, "s4", agent=None)
+    rows = db.q_mode_stats(conn, by="agent")
+    assert [(r["mode"], r["steps"], r["cost"]) for r in rows] == [
+        ("build", 2, 0.75), ("general", 1, 0.0), ("-", 1, None)]
+    var = db.q_mode_stats(conn, by="variant")
+    assert [r["mode"] for r in var] == ["max"]
+    assert var[0]["steps"] == 4
+    with pytest.raises(ValueError):
+        db.q_mode_stats(conn, by="model_id")
+
+
+def test_subagent_share_counts_child_sessions(conn):
+    """The KPI is the split of the window's sessions, not a separate total."""
+    session_row(conn, "ses_a")
+    session_row(conn, "ses_child", is_subagent=1, started=1_700_000_500_000)
+    share = db.q_subagent_share(conn)
+    assert share == {"sessions": 2, "subagents": 1}
+    share = db.q_subagent_share(conn, start_ts=1_700_000_400_000,
+                                end_ts=1_700_000_600_000)
+    assert share == {"sessions": 1, "subagents": 1}
+
+
+def test_cost_daily_sums_the_steps_cost_per_local_day(conn):
+    step_use(conn, "s1", cost=0.5, ts=1_700_000_000_000)
+    step_use(conn, "s2", cost=0.25, ts=1_700_000_100_000)
+    step_use(conn, "s3", cost=0.1, ts=1_700_086_400_000)   # the next day
+    rows = db.q_usage_cost_daily(conn)
+    assert [r["cost"] for r in rows] == [0.75, 0.1]
+
+
+def test_child_sessions_join_the_session_rollup(conn):
+    """A child session's own tokens are the usage evidence the host keeps.
+
+    The host bills the parent, so the child's `cost` is 0 — the join is how
+    the drill-down reaches the 20M tokens this host's subagents burned.
+    """
+    session_row(conn, "ses_parent")
+    session_row(conn, "ses_child", is_subagent=1,
+                started=1_700_000_500_000, ended=1_700_000_560_000,
+                agent="general", tokens=(500, 100, 0, 30, 5))
+    conn.execute(
+        "INSERT INTO agent_usage(call_id, agent_type, session_id,"
+        " child_session_id, ts) VALUES('a1', 'general', 'ses_parent',"
+        " 'ses_child', 1_700_000_490_000)")
+    # A call whose child never got a session row joins to nothing.
+    conn.execute(
+        "INSERT INTO agent_usage(call_id, agent_type, session_id,"
+        " child_session_id, ts) VALUES('a2', 'general', 'ses_parent',"
+        " NULL, 1_700_000_495_000)")
+    conn.commit()
+    rows = db.q_child_sessions(conn, "general")
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["session_id"] == "ses_child"
+    assert r["duration_ms"] == 60_000
+    assert (r["tokens_input"], r["tokens_output"]) == (500, 100)
+    assert r["cost"] == 0.0
+
+
+def test_sessions_report_lists_newest_first_with_the_host_rollup(conn):
+    session_row(conn, "ses_old", started=1_700_000_000_000,
+                ended=1_700_000_060_000)
+    session_row(conn, "ses_new", started=1_700_000_900_000,
+                ended=1_700_000_990_000, is_subagent=1, agent="general")
+    rows = db.q_sessions(conn)
+    assert [r["session_id"] for r in rows] == ["ses_new", "ses_old"]
+    assert rows[0]["duration_ms"] == 90_000
+    assert rows[0]["is_subagent"] == 1
+
 PLUGIN_HEADERS = ["plugin", "uses", "skills", "agents", "cmds", "state"]
 
 

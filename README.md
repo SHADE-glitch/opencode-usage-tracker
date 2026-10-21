@@ -97,7 +97,8 @@ opens OpenCode's database.
 | Textual | `textual>=8.2,<9` — needed by the interactive TUI only, installed into a venv by `install.sh` |
 | `uv` | optional but recommended for creating the venv; plain `python3 -m venv` also works |
 
-Every headless subcommand (`sync`, `stats`, `tools`, `health`, `export`, `backup`,
+Every headless subcommand (`sync`, `stats`, `tools`, `modes`, `sessions`, `health`,
+`export`, `backup`,
 `restore`, `format`, …) needs **only the Python standard library**. The hook runs inside
 OpenCode's own Bun runtime and needs nothing installed separately.
 
@@ -195,6 +196,7 @@ tabs, in that order). The tab bar and footer are the whole key surface:
 | `tab` | next tab |
 | `shift+tab` | previous tab |
 | `enter` / double-click | open the selected row's detail screen |
+| `c` | on an agent's history screen, open the child sessions its task calls spawned |
 | `escape` / `q` | go back from a pushed detail screen |
 
 The **Dashboard** is three rows of panels. The first row is the headline counts and the
@@ -203,17 +205,22 @@ token totals, each label printed beside its number:
 | Panel | Labels |
 |---|---|
 | Usage | `Tool calls`, `Skills`, `Agents`, `MCP`, `Plugins` |
-| Tokens | `Requests`, `Input`, `Output`, `API Total`, `Usage Total`, `Hit rate` |
+| Tokens | `Requests`, `Input`, `Output`, `API Total`, `Usage Total`, `Hit rate`, `Cost` |
 | Cache | `Cache hit`, `Cache miss`, `Cache write` |
-| Runtime | `Completed`, `Incomplete`, `Avg tool time`, `Sessions`, `Projects` |
+| Runtime | `Completed`, `Failed`, `Running`, `Avg tool time`, `Sessions`, `Subagents`, `Projects` |
 
-Below those sit the `Top models` and `Top tools` leaderboards, and a `Calls per day`
-trend. `Plugins` counts the distinct plugins the optional hook recorded in the window —
+Below those sit the `Top models`, `Top tools` and `Top modes` leaderboards, and a
+`Calls / cost per day` trend — two series over the same local days, because a cheap-call
+day and an expensive one read identically as call counts. `Plugins` counts the distinct plugins the optional hook recorded in the window —
 a passive reader has no evidence a plugin or command ran unless the hook wrote it (M3).
 
 The **Tools / Skills / Agents / Plugins / MCP** tabs are one row per entity, with calls,
 success, average duration and last use; `enter` on a row opens that entity's recent-call
-history. The **Tokens** tab is per-model token totals from the host's own step records —
+history. Two builtin tools were renamed across layouts (v1 `bash` → v2 `shell`, v1 `task`
+→ v2 `subagent`), so the Tools tab shows them as **one** row under the current name and a
+drill-down from either spelling returns both (M18). On an agent's history, `c` opens the
+**child sessions** its task calls spawned — each with its own token rollup, because the
+host bills a subagent's steps to the parent session. The **Tokens** tab is per-model token totals from the host's own step records —
 one row per `(model, provider)` that answered, never a model the config merely offers
 (a catalogue entry has no request or token to report, and the id in the config is a route
 name, not necessarily the model behind it). History is the durable side: a model removed
@@ -266,6 +273,15 @@ ocut format  [--write]
   in v1, the assistant message's `tokens` in v2), plus the most recent steps. `Total`
   is the host's own step total when it sent one; cache read/write are shown separately
   and are **not** inside it.
+- `modes` — model steps grouped by the host's own per-step `agent` (`build`, `plan`, the
+  subagent types), then by reasoning `variant` (`max`, `xhigh`, …). Both are OpenCode
+  fields with no CodeBuddy counterpart — this is the "where did the tokens actually go"
+  question, and subagent agents read `$0.0000` because the host bills their steps to the
+  parent session.
+- `sessions` — recent sessions newest first, with the agent mode each ran under, the
+  model, the directory, the host's token rollup and cost. A subagent run IS a session
+  here (`sub` column); hiding it would misread the day — on this host they are the
+  majority.
 - `show <kind> <name>` — the recent calls for one entity. `recent` — the most recent tool
   calls of any kind. `inventory` — what is installed or available.
 - `export` — dump every view and table as JSON.
@@ -466,7 +482,7 @@ the TUI first.**
 
 ## 🚧 Known limitations
 
-The list below runs **M1–M17**. The Chinese README carries the same list with more
+The list below runs **M1–M18**. The Chinese README carries the same list with more
 detail in [§9](README.zh-CN.md#known-limitations).
 
 - **M1** OpenCode's own database is the **source of truth**. `ocut` can only see what the
@@ -548,6 +564,14 @@ detail in [§9](README.zh-CN.md#known-limitations).
   exactly the same label as one that was installed and never touched. The label is
   deliberately about the inventory row, not about usage: nothing in this column is a claim
   that the thing ran.
+- **M18** Two builtin tools were renamed across layouts — v1's `bash` is v2's `shell`,
+  v1's `task` is v2's `subagent` — and history holds both spellings of the same tool.
+  The panels show **one** row under the current name (`TOOL_CANONICAL` in the reader is
+  the single place the mapping is declared), the raw `tool_calls` rows keep the spelling
+  the host wrote, the single-call detail still shows it, and a drill-down opened from
+  either spelling returns both. The aliasing applies to whatever the host wrote — a
+  third-party tool that happened to be named `bash` would merge too, and no such tool
+  exists in this host's history (plugin tools are namespaced by their plugin).
 - **M17** The TUI's **structure** — the eight tabs, their panels, their windows —
   mirrors the sibling CodeBuddy tracker's, on purpose: one mental model for both
   trackers. The **fields are ocut's own**, re-derived from what OpenCode records

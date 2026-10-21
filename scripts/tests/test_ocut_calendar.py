@@ -385,7 +385,11 @@ def test_a_picked_window_lands_on_the_tab_that_asked_and_on_no_other(tracker, cl
         # The window really filtered: `read` has 5 calls, all on that old day.
         read = [r for r in rows if r["tool_name"] == "read"]
         assert read and read[0]["calls"] == 5, read
-        assert any(r["tool_name"] == "bash" and r["calls"] == 0 for r in rows), rows
+        # The merged name is the current one (TOOL_CANONICAL): the fixture's v1
+        # `bash` calls list under `shell`, and a 0-call row for the old spelling
+        # would be exactly the second row the merge exists to remove.
+        assert any(r["tool_name"] == "shell" and r["calls"] == 0
+                   for r in rows), rows
         # The top bar says what the pane is showing, in the same breath.
         label = str(app.query_one("#date-range", Button).label)
         assert label == "📅 " + db.window_label(window), (label, window)

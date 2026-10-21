@@ -221,6 +221,13 @@ PLUGIN_HISTORY_COLUMNS = ("when", "kind", "item", "status", "duration",
 RESPONSE_COLUMNS = ("when", "model", "prompt", "completion", "total", "cost",
                     "cache read", "cache write", "usage", "message_id")
 
+# The Agents drill-down's second screen: the child sessions one agent type's
+# task calls spawned. OpenCode records each subagent run as its own session
+# (parent_id, is_subagent) and links it from the call — evidence no other tab
+# can show, and one of the fields that has no CodeBuddy counterpart.
+CHILD_COLUMNS = ("started", "dur", "agent", "model", "in", "out", "reason",
+                 "cache hit", "dir")
+
 
 # --- entity-panel registry -------------------------------------------------
 #
@@ -1159,7 +1166,8 @@ if HAVE_TEXTUAL:
         table lists the calls. Selecting a call pushes its full detail.
         """
 
-        BINDINGS = [Binding("escape,q", "app.pop_screen", "Back")]
+        BINDINGS = [Binding("escape,q", "app.pop_screen", "Back"),
+                    Binding("c", "child_sessions", "Child sessions")]
         # A pushed screen spans the terminal, so its table loses no cells to its
         # surroundings — measured: region width == terminal width at 60/80/100.
         WIDE_TABLES = {"hist-table": (HISTORY_COLUMNS, "colnote-hist", 0)}
@@ -1248,6 +1256,15 @@ if HAVE_TEXTUAL:
                  else "No calls recorded for this name"),
                 key_index=(0, 1), key_kind="call", key_rows=keys)
 
+        def action_child_sessions(self) -> None:
+            # Only an agent's call list has child sessions behind it; on every
+            # other kind the binding is a no-op rather than a second binding
+            # table per kind.
+            if self.kind != "agent":
+                return
+            self.app.push_screen(ChildSessionsScreen(
+                self.entity, display=self.heading, start_ts=self.start_ts,
+                end_ts=self.end_ts, window_label=self.window_label))
         def _summary_line(self, s) -> str:
             """One line of the entity's windowed counts, for the header."""
             if self.kind == "plugin":
@@ -1356,6 +1373,78 @@ if HAVE_TEXTUAL:
                     f"{fmt_n(s['cache_read'])}/{fmt_n(s['cache_write'])} · "
                     f"{self.window_label}")
 
+    class ChildSessionsScreen(WideTableMixin, Screen):
+        """The child sessions one agent type spawned, pushed from its history.
+
+        OpenCode bills the parent for a child's steps, so the child rows carry
+        no cost — the token rollup is the evidence. A plain read of one agent's
+        call list cannot answer "what did the subagents actually do", which is
+        why this is a screen of its own and not a column on the call list.
+        """
+
+        BINDINGS = [Binding("escape,q", "app.pop_screen", "Back")]
+        WIDE_TABLES = {"child-table": (CHILD_COLUMNS, "colnote-child", 0)}
+
+        @property
+        def name_cap(self) -> int:
+            return self.app.name_cap
+
+        def __init__(self, agent_type: str, display: str | None = None,
+                     start_ts=None, end_ts=None, window_label: str = "all time"):
+            super().__init__()
+            self.agent_type = agent_type
+            self.heading = display or agent_type
+            self.start_ts = start_ts
+            self.end_ts = end_ts
+            self.window_label = window_label
+            self._wide_rows = {}
+
+        def compose(self) -> ComposeResult:
+            yield TopBar(f"child sessions · {self.heading}")
+            yield Vertical(
+                Static(f"[b]child sessions[/b] · {self.heading}",
+                       id="child-title"),
+                Static(id="child-summary", classes="entity-summary"),
+                Static(id="colnote-child", classes="col-note"),
+                DataTable(id="child-table", zebra_stripes=True),
+            )
+            yield Footer()
+
+        def on_mount(self) -> None:
+            self.title = f"child sessions: {self.heading}"
+            self.query_one("#child-table", DataTable).cursor_type = "row"
+            conn = db.open_db(self.app.db_path, readonly=True)
+            try:
+                found = db.q_child_sessions(
+                    conn, self.agent_type, self.app.DETAIL_LIMIT,
+                    start_ts=self.start_ts, end_ts=self.end_ts)
+                rows = [[ts(r["started_at"]), ms(r["duration_ms"]),
+                         r["agent"] or "-", r["model"] or "-",
+                         fmt_n((r["tokens_input"] or 0)
+                               + (r["tokens_cache_read"] or 0)
+                               + (r["tokens_cache_write"] or 0)),
+                         fmt_n(r["tokens_output"]),
+                         fmt_n(r["tokens_reasoning"]),
+                         fmt_n(r["tokens_cache_read"]),
+                         (Path(r["directory"]).name if r["directory"] else "-")]
+                        for r in found]
+                # `in` is the full prompt (uncached + hit + write), the same
+                # definition the row cells and the Tokens pages use.
+                inp = sum((r["tokens_input"] or 0) + (r["tokens_cache_read"] or 0)
+                          + (r["tokens_cache_write"] or 0) for r in found)
+                out = sum((r["tokens_output"] or 0) for r in found)
+            finally:
+                conn.close()
+            if not found:
+                summary = f"no child sessions · {self.window_label}"
+            else:
+                summary = (f"{count_n(len(found), 'child session')} · "
+                           f"in {fmt_n(inp)} · out {fmt_n(out)} · "
+                           f"{self.window_label}")
+            self.query_one("#child-summary", Static).update(summary)
+            self._fill_wide("child-table", rows,
+                            "No child sessions recorded for this agent")
+
     class CallDetailScreen(Screen):
         """Every field of one call, pushed from a drill-down row.
 
@@ -1422,7 +1511,7 @@ if HAVE_TEXTUAL:
             height: auto;
         }
         #panel-runtime, #panel-dash-cache, #panel-dash-tools,
-        #panel-dash-activity { margin: 0; }
+        #panel-dash-activity, #panel-dash-modes { margin: 0; }
         .panel-title { text-style: bold; color: $accent; }
         #usage-status, #usage-window { padding: 0; }
         #usage-note, #dash-note { padding: 0 1; color: $text-muted; }
@@ -1431,8 +1520,8 @@ if HAVE_TEXTUAL:
            height because a note that is itself cut off at the right edge would be
            the same defect it exists to report. */
         .col-note { padding: 0 1; color: $text-muted; height: auto; display: none; }
-        #dash-activity { color: $accent; }
-        #dash-activity-axis { color: $text-muted; }
+        #dash-activity, #dash-cost { color: $accent; }
+        #dash-activity-axis, #dash-cost-axis { color: $text-muted; }
         #t-usage { height: 1fr; min-height: 6; }
         .summary-panels.compact, .dash-row.compact { layout: vertical; }
         /* Stacked one-per-row wastes the width a narrow terminal still has: at
@@ -1581,6 +1670,14 @@ if HAVE_TEXTUAL:
                                 Static(id="dash-tools"),
                                 classes="usage-panel", id="panel-dash-tools",
                             ),
+                            Vertical(
+                                # OpenCode records which agent ran each step;
+                                # CodeBuddy has no such field, so this panel is
+                                # one of the deliberate divergences.
+                                Static("Top modes", classes="panel-title"),
+                                Static(id="dash-modes"),
+                                classes="usage-panel", id="panel-dash-modes",
+                            ),
                             classes="dash-row", id="dash-row-2",
                         ),
                         # Row 3: runtime health + the per-day trend.
@@ -1592,13 +1689,18 @@ if HAVE_TEXTUAL:
                                 Static(id="dash-rt-running"),
                                 Static(id="dash-rt-avg"),
                                 Static(id="dash-rt-sessions"),
+                                Static(id="dash-rt-subagents"),
                                 Static(id="dash-rt-projects"),
                                 classes="usage-panel", id="panel-dash-runtime",
                             ),
                             Vertical(
-                                Static("Calls per day", classes="panel-title"),
+                                Static("Calls / cost per day", classes="panel-title"),
                                 Static(id="dash-activity"),
                                 Static(id="dash-activity-axis"),
+                                # OpenCode prices each step, so cost has its own
+                                # series over the same local days.
+                                Static(id="dash-cost"),
+                                Static(id="dash-cost-axis"),
                                 classes="usage-panel", id="panel-dash-activity",
                             ),
                             classes="dash-row", id="dash-row-3",
@@ -2113,6 +2215,10 @@ if HAVE_TEXTUAL:
                 tools = db.q_tools(conn, limit=self.DASH_TOP,
                                    start_ts=start, end_ts=end)
                 daily = db.q_usage_daily(conn, start, end)
+                modes = db.q_mode_stats(conn, start, end, by="agent",
+                                        limit=self.DASH_TOP)
+                share = db.q_subagent_share(conn, start, end)
+                cost_daily = db.q_usage_cost_daily(conn, start, end)
             except sqlite3.Error as e:
                 # e.g. an un-migrated DB where the newer columns are missing.
                 self.query_one("#dash-note", Static).update(
@@ -2122,10 +2228,11 @@ if HAVE_TEXTUAL:
             self._render_dashboard_kpi(kpi)
             self._render_dashboard_tokens(s)
             self._render_dashboard_cache(s)
-            self._render_dashboard_runtime(act)
+            self._render_dashboard_runtime(act, share)
             self._render_dashboard_models(models)
             self._render_dashboard_tools(tools)
-            self._render_dashboard_activity(daily, start, end)
+            self._render_dashboard_modes(modes)
+            self._render_dashboard_activity(daily, cost_daily, start, end)
             if not any(kpi.values()) and not (s["requests"] or 0):
                 self.query_one("#dash-note", Static).update(
                     "No data in this window — widen the range above.")
@@ -2170,7 +2277,7 @@ if HAVE_TEXTUAL:
             self._put_panel("#dash-cache-miss", "Cache miss", fmt_n(s["prompt_tokens"]))
             self._put_panel("#dash-cache-write", "Cache write", fmt_n(s["cache_write"]))
 
-        def _render_dashboard_runtime(self, a: dict) -> None:
+        def _render_dashboard_runtime(self, a: dict, share: dict) -> None:
             # counts are COUNT-based -> a real 0; avg_ms is NULL when nothing ran.
             # `error` and `running` are separate panels, not one "Incomplete":
             # the Tools tab shows them as `fail` and `run`, and a dashboard that
@@ -2180,7 +2287,29 @@ if HAVE_TEXTUAL:
             self._put_panel("#dash-rt-running", "Running", f"{a['running'] or 0:,}")
             self._put_panel("#dash-rt-avg", "Avg tool time", ms(a["avg_ms"]))
             self._put_panel("#dash-rt-sessions", "Sessions", f"{a['sessions'] or 0:,}")
+            # OpenCode records a subagent run as a session of its own, and on a
+            # working day they are the majority — one "sessions" count hides
+            # that, so the split is its own line.
+            self._put_panel("#dash-rt-subagents", "Subagents",
+                            f"{share['subagents'] or 0:,}/{share['sessions'] or 0:,}")
             self._put_panel("#dash-rt-projects", "Projects", f"{a['projects'] or 0:,}")
+
+        def _render_dashboard_modes(self, rows) -> None:
+            """The Top-modes leaderboard: the host's per-step agent, by tokens.
+
+            Same shape as Top models; the cost rides along because a mode is a
+            money question — build and plan burn the bill, subagent agents show
+            $0.0000 because the host bills their steps to the parent session.
+            """
+            top = rows[: self.DASH_TOP]
+            if not top:
+                self.query_one("#dash-modes", Static).update("nothing in this window")
+                return
+            lines = [f"{i}. {clip(r['mode'], 22):<22}"
+                     f"{fmt_n(r['total_tokens']):>12}"
+                     f"  {fmt_cost(r['cost'])}"
+                     for i, r in enumerate(top, 1)]
+            self.query_one("#dash-modes", Static).update("\n".join(lines))
 
         def _render_dashboard_models(self, rows) -> None:
             top = rows[: self.DASH_TOP]
@@ -2221,12 +2350,15 @@ if HAVE_TEXTUAL:
                 out.append(self._SPARK[level])
             return "".join(out)
 
-        def _render_dashboard_activity(self, daily, start, end) -> None:
-            """A one-line sparkline of calls per local day across the window.
+        def _render_dashboard_activity(self, daily, cost_daily, start, end) -> None:
+            """Two sparklines of the same local days: tool calls, then step cost.
 
-            ``daily`` only carries days that had calls, so the gaps are filled
-            from the window bounds. For the all-time range the series starts at
-            the first day with data (never from the epoch).
+            ``daily``/``cost_daily`` only carry days that had data, so the gaps
+            are filled from the window bounds. For the all-time range the series
+            starts at the first day with data (never from the epoch). One shared
+            day axis, two series: the cost bars answer "when did it burn", which
+            call counts cannot — a cheap-call day and an expensive one read
+            identically there.
             """
             counts = {r["day"]: r["calls"] for r in daily}
             now = self._now_ms() if end is None else end
@@ -2252,6 +2384,16 @@ if HAVE_TEXTUAL:
             else:
                 self.query_one("#dash-activity-axis", Static).update(
                     f"{days[0]:%m-%d} → {days[-1]:%m-%d} · no activity")
+            costs = {r["day"]: r["cost"] for r in cost_daily}
+            cost_series = [costs.get(day.isoformat()) or 0 for day in days]
+            self.query_one("#dash-cost", Static).update(
+                self._sparkline(cost_series))
+            peak = max(cost_series) if cost_series else 0
+            if peak > 0:
+                self.query_one("#dash-cost-axis", Static).update(
+                    f"peak ${peak:.2f}/day")
+            else:
+                self.query_one("#dash-cost-axis", Static).update("no cost in this window")
 
         @staticmethod
         def _hit_rate(hit, miss, write) -> str:

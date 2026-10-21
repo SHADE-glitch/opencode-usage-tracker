@@ -53,6 +53,17 @@ def fmt_n(v):
     return f"{v:,}"
 
 
+def fmt_cost(v):
+    """Render money: ``-`` for absent, ``$0.0000`` for a recorded zero.
+
+    Four decimals because OpenCode's cheapest recorded step on this host is
+    $0.0076 — two decimals would print $0.01 and hide the magnitude.
+    """
+    if v is None:
+        return "-"
+    return f"${v:.4f}"
+
+
 def _rendered_width(headers, rows) -> int:
     """Width (chars) of the table ``table()`` would print, including separators."""
     widths = [len(h) for h in headers]
@@ -610,12 +621,63 @@ def cmd_format(args) -> int:
     return 0
 
 
+def cmd_modes(conn, args):
+    """Model steps grouped by the host's own per-step `agent`, then by `variant`.
+
+    Both columns are OpenCode's — CodeBuddy publishes no counterpart, which is
+    why this report exists here and not in the sibling tracker. `in` is the
+    uncached prompt (cache hit is the read); `total` is the host total where
+    present, else the five-part sum, like `ocut models`.
+    """
+    def one(by, title):
+        rows = _rows(db.q_mode_stats(conn, by=by, limit=args.limit),
+                     ["mode", "steps", "prompt_tokens", "completion_tokens",
+                      "reasoning_tokens", "total_tokens", "cost",
+                      "with_usage"])
+        body = table_or(
+            [by, "steps", "in", "out", "reason", "total", "cost", "usage"],
+            [[r[0], f"{r[1]:,}", fmt_n(r[2]), fmt_n(r[3]), fmt_n(r[4]),
+              fmt_n(r[5]), fmt_cost(r[6]), f"{r[7]}/{r[1]}"]
+             for r in rows], empty="  (none)")
+        print(title)
+        print(body)
+        print()
+
+    one("agent", "Model steps by agent (the host's own per-step agent record)")
+    one("variant", "Model steps by reasoning variant")
+
+
+def cmd_sessions(conn, args):
+    """Recent sessions, newest first, with what the host records about each.
+
+    A subagent run IS a session here (`is_subagent`), and hiding it would
+    misread the day — on this host they are the majority. The directory is
+    shown as its basename; the stored value stays whole. Child sessions are
+    billed on the parent, so a subagent row's cost reads 0 — that is the
+    host's own rollup, not a missing value.
+    """
+    rows = _rows(db.q_sessions(conn, limit=args.limit),
+                 ["started_at", "duration_ms", "agent", "model",
+                  "tokens_input", "tokens_output", "tokens_reasoning",
+                  "tokens_cache_read", "tokens_cache_write", "cost",
+                  "is_subagent", "directory", "session_id"])
+    print(table_or(
+        ["when", "dur", "agent", "model", "in", "out", "cost",
+         "sub", "dir", "session"],
+        [[ts(r[0]), ms(r[1]), r[2] or "-", r[3] or "-",
+          fmt_n((r[4] or 0) + (r[7] or 0) + (r[8] or 0)),   # Input = in + cache read + write
+          fmt_n(r[5]), fmt_cost(r[9]),
+          "yes" if r[10] else "-",
+          (Path(r[11]).name if r[11] else "-"),
+          (r[12] or "")[:8]] for r in rows],
+        empty="  (no sessions indexed yet)"))
+
 # --- driver ----------------------------------------------------------------
 
 COMMANDS = {
     "stats": cmd_stats, "tools": cmd_tools, "skills": cmd_skills,
     "agents": cmd_agents, "mcp": cmd_mcp, "plugins": cmd_plugins,
-    "models": cmd_models,
+    "models": cmd_models, "modes": cmd_modes, "sessions": cmd_sessions,
     "show": cmd_show, "recent": cmd_recent, "inventory": cmd_inventory,
     "export": cmd_export, "health": cmd_health,
 }
@@ -644,7 +706,8 @@ def main(argv=None) -> int:
     for name in ("stats", "health", "plugins", "inventory", "export"):
         p = sub_with_db(name)
         p.add_argument("--kind", default=None, help="inventory only: filter by kind")
-    for name in ("tools", "skills", "agents", "mcp", "recent", "models"):
+    for name in ("tools", "skills", "agents", "mcp", "recent", "models",
+                 "modes", "sessions"):
         sub_with_db(name).add_argument("--limit", type=int, default=30)
     sp = sub_with_db("show")
     sp.add_argument("kind", choices=["tool", "skill", "agent", "mcp"])

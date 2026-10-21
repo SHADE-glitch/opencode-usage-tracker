@@ -26,8 +26,9 @@ import ocut_db as db  # noqa: E402  (stdlib-only: tomllib, sqlite3, pathlib)
 # columns the host has no field for, and the blind spot the state label inherits from
 # the hook, the two state labels that are answers and the one that is an admission, and
 # the external skill roots the reader does not walk, and the tab-level CodeBuddy
-# parity that stops at the detail screens. M1-M17.
-LIMITATIONS = tuple(f"M{i}" for i in range(1, 18))
+# parity that stops at the detail screens, and the two renamed tools shown merged
+# under their current names. M1-M18.
+LIMITATIONS = tuple(f"M{i}" for i in range(1, 19))
 
 # The load-bearing half of each limitation. A marker alone could survive a rewrite
 # that dropped the meaning, so each Mx must sit beside a keyword that is actually
@@ -50,6 +51,7 @@ EN_KEYWORDS = (
     "not reported",         # M15
     "~/.agents/skills",      # M16
     "column-for-column",    # M17
+    "TOOL_CANONICAL",       # M18
 )
 ZH_KEYWORDS = (
     "事实来源",              # M1
@@ -69,6 +71,7 @@ ZH_KEYWORDS = (
     "not reported",         # M15
     "~/.agents/skills",      # M16
     "无法逐字",               # M17
+    "TOOL_CANONICAL",       # M18
 )
 
 # --- HTTP status-code parity across a bilingual pair -------------------------
@@ -234,8 +237,8 @@ def test_readme_documents_the_dashboard_panels():
     # The token, cache and runtime panels.
     for label in ("Requests", "Input", "Output", "API Total", "Usage Total",
                   "Cache hit", "Cache miss", "Cache write", "Hit rate",
-                  "Completed", "Incomplete", "Avg tool time", "Sessions",
-                  "Projects"):
+                      "Completed", "Failed", "Running", "Avg tool time",
+                      "Sessions", "Subagents", "Projects"):
         assert label in text, f"Dashboard panel not documented: {label}"
 
 

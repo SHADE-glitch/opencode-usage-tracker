@@ -87,7 +87,7 @@ OpenCode 把插件的工具记在工具自己的名字下，没有任何东西�
 | Textual | `textual>=8.2,<9`——只有交互式 TUI 需要，由 `install.sh` 装进 venv |
 | `uv` | 可选，但推荐用来创建 venv；普通的 `python3 -m venv` 同样可行 |
 
-所有无头子命令（`sync`、`stats`、`tools`、`health`、`export`、`backup`、`restore`、
+所有无头子命令（`sync`、`stats`、`tools`、`modes`、`sessions`、`health`、`export`、`backup`、`restore`、
 `format`……）**只需要 Python 标准库**。hook 跑在 OpenCode 自己的 Bun 运行时里，不需要另装任何东西。
 
 ---
@@ -179,6 +179,7 @@ tab 栏与页脚就是全部按键面：
 | `tab` | 下一个 tab |
 | `shift+tab` | 上一个 tab |
 | `enter` / 双击 | 打开选中行的详情屏 |
+| `c` | 在某个 agent 的历史屏上，打开它的 task 调用产生的子会话 |
 | `escape` / `q` | 从推入的详情屏返回 |
 
 **Dashboard** 是三行面板。第一行是头条计数与 token 合计，每个标签都印在它的数字旁边：
@@ -186,16 +187,20 @@ tab 栏与页脚就是全部按键面：
 | 面板 | 标签 |
 |---|---|
 | Usage | `Tool calls`、`Skills`、`Agents`、`MCP`、`Plugins` |
-| Tokens | `Requests`、`Input`、`Output`、`API Total`、`Usage Total`、`Hit rate` |
+| Tokens | `Requests`、`Input`、`Output`、`API Total`、`Usage Total`、`Hit rate`、`Cost` |
 | Cache | `Cache hit`、`Cache miss`、`Cache write` |
-| Runtime | `Completed`、`Incomplete`、`Avg tool time`、`Sessions`、`Projects` |
+| Runtime | `Completed`、`Failed`、`Running`、`Avg tool time`、`Sessions`、`Subagents`、`Projects` |
 
-下面坐着 `Top models` 与 `Top tools` 两个排行榜，以及一张 `Calls per day` 趋势图。
+下面坐着 `Top models`、`Top tools` 与 `Top modes` 三个排行榜，以及一张 `Calls / cost per day`
+趋势图——同一批本地日子的两条序列，因为便宜调用多的一天和贵的一天，在调用计数里长得一模一样。
 `Plugins` 数的是该窗口内可选 hook 记到的不同插件数——除非 hook 写了东西，被动读取器没有
 任何证据说明某个插件或命令真的跑过（M3）。
 
 **Tools / Skills / Agents / Plugins / MCP** 五个 tab 一行一个实体，列出调用次数、成功数、
-平均耗时与最近使用；在某行按 `enter` 打开该实体的最近调用历史。**Tokens** tab 是宿主自己
+平均耗时与最近使用；在某行按 `enter` 打开该实体的最近调用历史。两个内置工具在布局换代时改了名
+（v1 的 `bash` → v2 的 `shell`，v1 的 `task` → v2 的 `subagent`），所以 Tools 页在**当前名**下把
+它们显示为**一行**，从任一拼写下钻都能拿到两次历史（M18）。在某个 agent 的历史屏按 `c`，打开
+它的 task 调用产生的**子会话**——各带自己的 token 汇总，因为宿主把子 agent 的步骤记在父会话的账上。**Tokens** tab 是宿主自己
 每步记录汇总出的按模型 token 合计——每个真正回答过的 `(模型, provider)` 一行，配置里只是
 「提供」但没回答过的模型不占行（目录项没有请求也没有 token，而配置里的 id 是路由名，未必
 等于背后真正回答的模型）。历史才是持久的一侧：从配置里移除的模型保留它自己挣到的行。
@@ -242,6 +247,12 @@ ocut format  [--write]
 - `models`：宿主自己按步用量（v1 的 `step-finish`，v2 的 assistant message `tokens`）汇总出的按模型
   token 合计，外加最近若干步。`Total` 是宿主自报的那一步总量（如果它给了）；cache read/write 单独
   显示，**不**算进它里面。
+- `modes`：模型步骤按宿主自己每步记录的 `agent`（`build`、`plan`、各子 agent 类型）分组，再按推理
+  `variant`（`max`、`xhigh`……）分组。两者都是 OpenCode 的字段、CodeBuddy 没有对应物——这就是
+  「token 到底烧在哪」的问题；子 agent 的读数是 `$0.0000`，因为宿主把这些步骤记在父会话的账上。
+- `sessions`：最近的会话，按开始时间倒序，带各自运行所在的 agent 模式、模型、目录、宿主的 token
+  汇总与 cost。子 agent 的运行在这里就是一个会话（`sub` 列）；把它藏起来会看错这一天——在本机上
+  它们占多数。
 - `show <kind> <name>`：某个实体的最近调用。`recent`：最近的任意工具调用。`inventory`：装了什么、
   有什么可用。
 - `export`：把每个视图与表 dump 成 JSON。
@@ -418,7 +429,7 @@ ocut vacuum            # 压缩文件，并报告回收回来多少
 
 ## 🚧 已知限制
 
-下面这份清单覆盖 **M1–M17**。
+下面这份清单覆盖 **M1–M18**。
 
 - **M1** OpenCode 自己的数据库是**事实来源**。`ocut` 只看得见宿主写下的东西；宿主从没写下的调用
   （v1 的 `part`，v2 的 `session_message` 里的工具条目）就是不可见，而不是被记错。
@@ -474,6 +485,11 @@ ocut vacuum            # 压缩文件，并报告回收回来多少
   用量只有那个可选的 hook 会写（M3），所以「装了、hook 什么也没记到」的插件，与「装了、从没被碰过」的
   插件拿到的是同一个标签。这个标签刻意只讲 inventory 行，不讲用量：这一列里没有任何一个字在说
   「它跑过」。
+- **M18** 两个内置工具在布局换代时改了名——v1 的 `bash` 是 v2 的 `shell`，v1 的 `task` 是 v2 的
+  `subagent`——而历史里存着同一工具的两种拼写。面板在**当前名**下显示**一行**（读取器里的
+  `TOOL_CANONICAL` 是这份映射唯一的声明处），`tool_calls` 的原始行保留宿主写下的拼写，单次调用
+  详情也照旧显示它，从任一拼写下钻都能拿到两次历史。改名映射对宿主写下的所有行生效——真有第三方
+  工具恰好叫 `bash` 也会被合并，但本机历史里没有这种工具（插件工具都以插件名作前缀）。
 - **M17** TUI 的**结构**——八个页、各自的面板与窗口——刻意对齐姊妹项目 CodeBuddy：两个追踪器共用一套
   心智模型。但**字段是 ocut 自己的**，从 OpenCode 实际记录的内容重新推导，不为对称而照搬，所以页级
   在宿主不同处已经分岔：Usage/Responses/Tokens 带 `Cost` 列（OpenCode 的每步价格让它成真），Tools 用

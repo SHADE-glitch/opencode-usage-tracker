@@ -35,6 +35,7 @@ _spec.loader.exec_module(tui)
 # drift and the TUI is tested against a host that no longer exists.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_ocut_sync as ts_sync                        # noqa: E402
+import test_ocut_drill as drill_tests                   # noqa: E402
 
 TRACKER_TABS = ["tab-dashboard", "tab-tools", "tab-skills", "tab-agents",
                 "tab-plugins", "tab-mcp", "tab-tokens", "tab-usage"]
@@ -405,7 +406,8 @@ def test_the_tools_tab_counts_a_call_still_in_flight(tracker, clock):
         table = app.query_one("#t-tools", DataTable)
         assert headers(table) == list(tui.TOOLS_COLUMNS), headers(table)
         at = list(tui.TOOLS_COLUMNS).index("run")
-        row = first_column(table).index("bash")
+        # The fixture's `bash` calls list under the merged (v2) name.
+        row = first_column(table).index("shell")
         assert cell(table, row, at) == "1", (
             first_column(table), [cell(table, row, j)
                                   for j in range(len(tui.TOOLS_COLUMNS))])
@@ -911,6 +913,74 @@ def test_the_sync_runs_in_a_daemon_thread_so_quitting_never_waits(tmp_path):
     assert seen.get("daemon") is True, (
         "the sync thread must be a daemon, or quitting waits for it")
 
+
+def test_the_dashboard_shows_modes_subagents_and_a_cost_series(tracker, clock):
+    """The three OpenCode-native panels the sibling tracker cannot have.
+
+    A cost-bearing step under one agent mode is inserted by hand; the fixture
+    sessions are all main-agent sessions, so the Subagents line reads 0/2.
+    Each panel is read against what the window's own SQL would produce.
+    """
+    conn = sqlite3.connect(tracker)
+    ts = int(clock() * 1000) - 60_000
+    conn.execute(
+        "INSERT INTO model_calls(call_id, model, provider, agent, variant,"
+        " prompt_tokens, completion_tokens, total_tokens, cost, ts)"
+        " VALUES('prt_mode', 'model-x', 'vendor', 'build', 'max', 10, 5, 15,"
+        " 0.0125, ?)", (ts,))
+    conn.commit()
+
+    async def body(pilot, app):
+        app.tab_range["tab-dashboard"] = "all"
+        app._refresh_active_tab()
+        await pilot.pause(0.6)
+        modes = str(app.query_one("#dash-modes").content)
+        assert "build" in modes and "$0.0125" in modes, modes
+        sub = str(app.query_one("#dash-rt-subagents").content)
+        assert "0/2" in sub, sub
+        axis = str(app.query_one("#dash-cost-axis").content)
+        assert "peak $0.01/day" in axis, axis
+        bars = str(app.query_one("#dash-cost").content)
+        assert bars.strip() and "·" not in bars, (
+            "a day with cost must draw a bar, not the dotted empty state", bars)
+    drive(lambda: tui.TrackerApp(str(tracker), clock=clock), body)
+    conn.close()
+
+
+def test_an_agent_history_opens_its_child_sessions(tracker, clock):
+    """`c` on an agent's call list shows the sessions its task calls spawned.
+
+    The fixture's explore task call names `ses_child`; the child session row
+    is inserted here because the host writes it only when a session actually
+    ran. The screen shows the child's own token rollup — the evidence the
+    host keeps, since the child is billed on the parent.
+    """
+    conn = sqlite3.connect(tracker)
+    conn.execute(
+        "INSERT INTO sessions(session_id, project, directory, agent, model,"
+        " provider, parent_id, is_subagent, started_at, ended_at, cost,"
+        " tokens_input, tokens_output, tokens_reasoning, tokens_cache_read,"
+        " tokens_cache_write, host_version)"
+        " VALUES('ses_child', 'p1', '/home/u/proj', 'general', 'model-x',"
+        " 'vendor', NULL, 1, 1700000500000, 1700000560000, 0.0, 500, 100, 0,"
+        " 30, 5, '2.0.32')")
+    conn.commit()
+    conn.close()
+
+    async def body(pilot, app):
+        await activate(app, pilot, "tab-agents")
+        table = app.screen.query_one("#t-agents", DataTable)
+        row = first_column(table).index("explore")
+        screen = await drill_tests.open_row(app, pilot, "#t-agents", row)
+        assert isinstance(screen, tui.HistoryScreen), app.screen_stack
+        await pilot.press("c")
+        await pilot.pause(0.6)
+        child = app.screen_stack[-1]
+        assert isinstance(child, tui.ChildSessionsScreen), app.screen_stack
+        table = child.query_one("#child-table", DataTable)
+        assert table.row_count == 1, table.row_count
+        assert "in 535" in str(child.query_one("#child-summary").content)  # 500+30+5
+    drive(lambda: tui.TrackerApp(str(tracker), clock=clock), body)
 
 # --- what the status bar is allowed to shout about -------------------------
 
