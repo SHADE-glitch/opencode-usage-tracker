@@ -522,7 +522,8 @@ def test_sessions_report_lists_newest_first_with_the_host_rollup(conn):
     assert rows[0]["duration_ms"] == 90_000
     assert rows[0]["is_subagent"] == 1
 
-PLUGIN_HEADERS = ["plugin", "uses", "skills", "agents", "cmds", "state"]
+PLUGIN_HEADERS = ["plugin", "uses", "tools", "skills", "agents", "cmds",
+                  "last used", "state"]
 
 
 def stats(conn, *args) -> str:
@@ -570,7 +571,9 @@ def test_the_headless_plugins_list_is_column_for_column_the_tui(conn):
     install(conn, "plugin", "alpha", version="1.2.3")
     install(conn, "skill", "s1", owner="alpha")
     out = stats(conn, "plugins")
-    assert " ".join(header_line(out)) == " ".join(PLUGIN_HEADERS), out
+    # A two-word label ("last used") is one column, so both sides are compared
+    # after collapsing whitespace rather than token by token.
+    assert " ".join(header_line(out)) == " ".join(" ".join(PLUGIN_HEADERS).split()), out
     assert " ".join(PLUGIN_HEADERS) == " ".join(tui.PLUGINS_COLUMNS), "drifted"
 
 
@@ -634,3 +637,28 @@ def test_one_model_on_two_providers_is_two_rows(conn):
     model_use(conn, "shared", "p2", ts=1_700_000_000_001)
     rows = {(r["model"], r["provider"]) for r in db.q_model_tokens(conn)}
     assert rows == {("shared", "p1"), ("shared", "p2")}
+
+
+def test_an_unfinished_tool_counts_in_run_and_the_canonical_name_counts_once(conn):
+    """`streaming` is not a fourth spelling of "finished", and `bash`/`shell` is one tool.
+
+    The Tools row is the only place a reader checks "calls = ok + fail + run" at a
+    glance. Counting only `running` left the equation short by every streaming call,
+    and counting raw spellings made the health line disagree with the table.
+    """
+    statuses = ("completed", "error", "running", "streaming")
+    for i, status in enumerate(statuses):
+        conn.execute(
+            "INSERT INTO tool_calls(call_id, tool_name, status, ts)"
+            " VALUES(?,?,?,?)", (f"call_{i}", "shell", status, 1_700_000_000_000 + i))
+    conn.execute(
+        "INSERT INTO tool_calls(call_id, tool_name, status, ts)"
+        " VALUES('call_old','bash','completed',1700000000000)")
+    conn.commit()
+
+    rows = db.q_tools(conn)
+    assert [r["tool_name"] for r in rows] == ["shell"], rows
+    row = rows[0]
+    assert (row["calls"], row["completed"], row["errored"], row["running"]) == (5, 2, 1, 2)
+    assert row["calls"] == row["completed"] + row["errored"] + row["running"]
+    assert db.overview(conn)["distinct_tools"] == 1

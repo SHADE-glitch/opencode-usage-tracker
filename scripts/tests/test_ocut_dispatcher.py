@@ -27,7 +27,7 @@ ROUTES = ("tui", "sync", "stats", "tools", "skills", "agents", "plugins", "mcp",
           "health", "format", "backup", "restore", "vacuum")
 
 VALUE_FLAGS = ("--db", "--kind", "--limit", "--host-db", "--host-config",
-               "--host-home", "--plugin-events")
+               "--host-home", "--plugin-events", "--server")
 
 
 @pytest.fixture

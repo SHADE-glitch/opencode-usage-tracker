@@ -15,8 +15,13 @@ OpenCode install no more than any other file in the suite does.
 import contextlib
 import importlib.util
 import io
+import json
+import os
+import sqlite3
 import sys
 from pathlib import Path
+
+import pytest
 
 SCRIPTS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SCRIPTS))
@@ -150,3 +155,148 @@ def test_health_still_says_zero_and_why_when_nothing_is_unparsed(tmp_path):
     conn.close()
     text = health(path)
     assert "unparsed       0 — every record type was claimed" in text, text
+
+
+# --- restore ---------------------------------------------------------------
+
+def _live_db(tmp_path):
+    path = tmp_path / "usage.db"
+    conn = db.open_db(path)
+    db.ensure_schema(conn)
+    conn.execute(
+        "INSERT INTO tool_calls(call_id, tool_name) VALUES('prt_keep','shell')")
+    conn.commit()
+    conn.close()
+    return path
+
+
+def test_restoring_the_oldest_snapshot_keeps_the_source_and_the_live_rows(tmp_path):
+    """The pre-restore snapshot must not prune the file it is restoring.
+
+    With a full backup directory, taking the undo copy pushes the oldest snapshot
+    past the retention cutoff. The old order pruned it first and then ``connect``
+    recreated it as an empty file, so restoring it replaced the live database with
+    zero tables. The source now stays open read-only and is protected from the
+    sweep, and the copy lands through a temporary file that is checked first.
+    """
+    live = _live_db(tmp_path)
+    conn = db.open_db(live)
+    try:
+        snapshots = [db.snapshot(conn, reason=f"r{i}", db_path=live)
+                     for i in range(db.BACKUP_KEEP)]
+    finally:
+        conn.close()
+    # Pin the order independently of how fast the snapshots were taken, and pick
+    # the oldest: that is the one the next prune would delete.
+    for i, path in enumerate(snapshots):
+        os.utime(path, (1_700_000_000 + i, 1_700_000_000 + i))
+    victim = min(snapshots, key=lambda p: p.stat().st_mtime)
+    assert victim.stat().st_size > 0
+
+    db.restore(victim, db_path=live)
+
+    assert victim.exists(), "the snapshot being restored was pruned"
+    assert victim.stat().st_size > 0, "the snapshot being restored became an empty file"
+    check = sqlite3.connect(live)
+    try:
+        assert check.execute("PRAGMA quick_check").fetchone()[0] == "ok"
+        assert check.execute(
+            "SELECT COUNT(*) FROM tool_calls").fetchone()[0] == 1
+        assert check.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table'").fetchone()[0] > 0
+    finally:
+        check.close()
+    undo = list(db.backup_dir(live).glob("*pre-restore*.db"))
+    assert undo, "the restore did not snapshot the database it replaced"
+
+
+def test_restore_refuses_a_damaged_backup_without_touching_the_live_file(tmp_path):
+    live = _live_db(tmp_path)
+    before = live.read_bytes()
+    bad = tmp_path / "bad.db"
+    bad.write_bytes(b"this is not a database")
+    with pytest.raises((sqlite3.Error, ValueError)):
+        db.restore(bad, db_path=live)
+    assert live.read_bytes() == before
+
+
+def test_restore_refuses_an_empty_file_without_touching_the_live_file(tmp_path):
+    """A zero-byte file is valid SQLite, so quick_check alone cannot reject it."""
+    live = _live_db(tmp_path)
+    before = live.read_bytes()
+    empty = tmp_path / "empty.db"
+    empty.write_bytes(b"")
+    with pytest.raises(ValueError, match="not an ocut database"):
+        db.restore(empty, db_path=live)
+    assert live.read_bytes() == before
+
+
+# --- export / show scoping / health labels ---------------------------------
+
+def test_export_carries_every_table_and_view(tmp_path, capsys):
+    """The export is the incident copy: raw calls, cursors and unparsed included."""
+    path = tmp_path / "usage.db"
+    conn = db.open_db(path)
+    db.ensure_schema(conn)
+    conn.execute("INSERT INTO tool_calls(call_id, tool_name) VALUES('prt_x','shell')")
+    conn.execute("INSERT INTO sync_state(name, cursor) VALUES('part', 7)")
+    conn.commit()
+    expected = {row[0] for row in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type IN ('table','view')"
+        " AND name NOT LIKE 'sqlite_%'")}
+    conn.close()
+
+    assert stats.main(["--db", str(path), "export"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert expected <= set(out), sorted(expected - set(out))
+    assert out["tool_calls"][0]["tool_name"] == "shell"
+    assert out["sync_state"][0]["cursor"] == 7
+    assert "meta" in out and "unparsed" in out and "v_tools" in out
+
+
+def test_show_mcp_refuses_to_merge_two_servers_and_honours_server(tmp_path, capsys):
+    path = tmp_path / "usage.db"
+    conn = db.open_db(path)
+    db.ensure_schema(conn)
+    for i, server in enumerate(("alpha", "beta")):
+        conn.execute(
+            "INSERT INTO mcp_usage(call_id, server, tool, session_id, project, ts)"
+            " VALUES(?,?,?,?,?,?)",
+            (f"call_{i}", server, "search", f"ses_{i}", server, 1_700_000_000_000 + i))
+    conn.commit()
+    conn.close()
+
+    with pytest.raises(SystemExit) as out:
+        stats.main(["--db", str(path), "show", "mcp", "search"])
+    assert out.value.code == 2
+    err = capsys.readouterr().err
+    assert "2 servers" in err and "--server alpha" in err and "--server beta" in err
+
+    assert stats.main(["--db", str(path), "show", "mcp", "search",
+                       "--server", "alpha"]) == 0
+    text = capsys.readouterr().out
+    assert "mcp alpha · search" in text
+    assert "alpha" in text and "beta" not in text
+
+
+def test_health_labels_the_sidecar_in_bytes_and_the_format_as_a_marker(tmp_path):
+    """A byte cursor printed as a row count invented thousands of calls."""
+    path = tmp_path / "usage.db"
+    conn = db.open_db(path)
+    db.ensure_schema(conn)
+    conn.execute(
+        "INSERT INTO sync_state(name, cursor, host_count, host_max, note)"
+        " VALUES('plugin-events', 1234, 1234, 1234, '')")
+    conn.execute(
+        "INSERT INTO sync_state(name, cursor, host_count, host_max, note)"
+        " VALUES('host-format', 2, 0, 0, 'v2')")
+    conn.execute(
+        "INSERT INTO plugin_usage(call_id, plugin, kind, item, ts)"
+        " VALUES('cmd_a','dcp','command','compress',1700000000000)")
+    conn.commit()
+    conn.close()
+
+    text = health(path)
+    assert "sidecar plugin-events 1,234 of 1,234 bytes (1 calls indexed)" in text, text
+    assert "format  v2 (marker 2)" in text, text
+    assert "1234 live rows" not in text, text

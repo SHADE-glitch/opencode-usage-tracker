@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import ocut_db as db                                    # noqa: E402
 from textual.app import App                             # noqa: E402
 from textual.widgets import (                           # noqa: E402
-    Button, Checkbox, DataTable, Input, Static,
+    Button, Checkbox, DataTable, Input, Select, Static,
 )
 
 _spec = importlib.util.spec_from_file_location(
@@ -340,6 +340,40 @@ def clock(tracker):
     return lambda: pinned
 
 
+def test_the_top_bar_keeps_presets_and_custom_as_two_controls(tracker, clock):
+    """The Select picks a fixed range; the button opens the calendar.
+
+    Both were collapsed into one menu, which made every preset two clicks and hid
+    which window was active. They are separate controls again: the Select follows
+    the active tab's own preset, and choosing "Custom…" opens the picker without
+    committing anything. Cancelling restores the preset the tab still has.
+    """
+    async def body(pilot, app):
+        sel = app.query_one("#range", Select)
+        btn = app.query_one("#date-range", Button)
+        assert sel.value == "1d", sel.value       # Dashboard's default
+        assert "Custom" in str(btn.label), str(btn.label)
+
+        await tui_tests.activate(app, pilot, "tab-tools")
+        assert sel.value == "7d", sel.value       # that tab's own preset
+        sel.value = "30d"
+        await pilot.pause(0.6)
+        assert app.tab_range["tab-tools"] == "30d"
+        assert sel.value == "30d"
+        assert "Custom" in str(btn.label), str(btn.label)
+
+        sel.value = tui.CUSTOM_RANGE
+        await pilot.pause(0.6)
+        assert isinstance(app.screen, tui.DateRangeModal), type(app.screen)
+        await pilot.press("escape")
+        await pilot.pause(0.5)
+        assert app.tab_range["tab-tools"] == "30d"
+        assert sel.value == "30d", sel.value
+        assert "Custom" in str(btn.label), str(btn.label)
+    tui_tests.drive(lambda: tui.TrackerApp(str(tracker), clock=clock), body,
+                    size=(110, 45))
+
+
 def test_a_picked_window_lands_on_the_tab_that_asked_and_on_no_other(tracker, clock):
     """The whole chain: 📅, typed span, Confirm, then the pane's rows are that span.
 
@@ -379,6 +413,10 @@ def test_a_picked_window_lands_on_the_tab_that_asked_and_on_no_other(tracker, cl
         assert app.tab_range["tab-dashboard"] == "1d"
 
         got = app.query_one("#t-tools", DataTable)
+        # The default list is used-in-window; `a` opens the installed union, which
+        # is the set q_tools itself returns.
+        await pilot.press("a")
+        await pilot.pause(0.4)
         rows = list(db.q_tools(conn, start_ts=window.start_ms, end_ts=window.end_ms))
         assert [str(got.get_cell_at((i, 0))) for i in range(got.row_count)] == \
             [r["tool_name"] for r in rows], rows
@@ -390,9 +428,11 @@ def test_a_picked_window_lands_on_the_tab_that_asked_and_on_no_other(tracker, cl
         # would be exactly the second row the merge exists to remove.
         assert any(r["tool_name"] == "shell" and r["calls"] == 0
                    for r in rows), rows
-        # The top bar says what the pane is showing, in the same breath.
+        # The top bar says what the pane is showing, in the same breath: the
+        # Select stands on "Custom…" and the button names the span.
         label = str(app.query_one("#date-range", Button).label)
-        assert label == "📅 " + db.window_label(window), (label, window)
+        assert label == "📅 " + db.window_label(window) + " ▾", (label, window)
+        assert app.query_one("#range", Select).value == tui.CUSTOM_RANGE
     tui_tests.drive(lambda: tui.TrackerApp(str(tracker), clock=clock), body,
                   size=(92, 46))
 

@@ -208,11 +208,13 @@ def conn_of(tracker):
 # --- level one: which row is which entity ----------------------------------
 
 def test_two_servers_sharing_a_tool_name_open_two_different_histories(tracker, clock):
-    """An MCP row's identity is the (server, tool) pair, not the tool alone.
+    """An MCP call's identity is the (server, tool) pair, not the tool alone.
 
-    `mcp_usage.tool` holds `search` for both rows, so a history that queried the tool
-    without the server would show four calls under each row while titling them
-    differently — and the header counts would inherit the same scope error.
+    The MCP tab now groups by server, so the pair is reached one level down: each
+    server row opens its own tool screen, and both list a tool named `search`.
+    A history that queried the tool without the server would show four calls under
+    each one while titling them differently — and the header counts would inherit
+    the same scope error.
     """
     conn = conn_of(tracker)
 
@@ -220,11 +222,22 @@ def test_two_servers_sharing_a_tool_name_open_two_different_histories(tracker, c
         await tui_tests.activate(app, pilot, "tab-mcp")
         table = app.query_one("#t-mcp", DataTable)
         assert headers_of(table) == list(tui.MCP_COLUMNS), headers_of(table)
-        assert [[r[0], r[1]] for r in rows_of(table)] == \
-            [["alpha", "search"], ["beta", "search"]], rows_of(table)
+        assert [r[0] for r in rows_of(table)] == ["alpha", "beta"], rows_of(table)
 
+        calls_at = tui.MCP_TOOL_COLUMNS.index("calls")
         for i, (server, calls) in enumerate((("alpha", 3), ("beta", 1))):
-            screen = await open_row(app, pilot, "#t-mcp", i)
+            server_screen = await open_row(app, pilot, "#t-mcp", i)
+            assert isinstance(server_screen, tui.McpServerScreen), \
+                type(server_screen)
+            assert server_screen.server == server
+            assert server in text_of(server_screen, "#mcp-title"), server
+            tools = server_screen.query_one("#mcp-tool-table", DataTable)
+            names = [str(tools.get_cell_at((r, 0))) for r in range(tools.row_count)]
+            assert "search" in names, names
+            row = names.index("search")
+            assert str(tools.get_cell_at((row, calls_at))) == str(calls), rows_of(tools)
+
+            screen = await open_row(app, pilot, "#mcp-tool-table", row)
             assert isinstance(screen, tui.HistoryScreen), type(screen)
             assert (screen.kind, screen.entity, screen.server) == \
                 ("mcp", "search", server), (screen.kind, screen.entity, screen.server)
@@ -235,6 +248,9 @@ def test_two_servers_sharing_a_tool_name_open_two_different_histories(tracker, c
                 (server, hist.row_count, calls, len(expected))
             assert f"{calls} call" in text_of(screen, "#hist-summary"), server
             assert f"{server} · search" in text_of(screen, "#hist-title"), server
+            await pilot.press("escape")
+            await pilot.pause(0.5)
+            assert isinstance(app.screen, tui.McpServerScreen), "did not return to the server"
             await pilot.press("escape")
             await pilot.pause(0.5)
             assert len(app.screen_stack) == 1, "popping did not come back to the tab"
@@ -341,7 +357,12 @@ def test_a_call_row_opens_its_own_record_and_prints_no_prose(tracker, clock):
 
     async def body(pilot, app):
         await tui_tests.activate(app, pilot, "tab-mcp")
-        screen = await open_row(app, pilot, "#t-mcp", 0)
+        server_screen = await open_row(app, pilot, "#t-mcp", 0)
+        assert isinstance(server_screen, tui.McpServerScreen), type(server_screen)
+        tools = server_screen.query_one("#mcp-tool-table", DataTable)
+        names = [str(tools.get_cell_at((r, 0))) for r in range(tools.row_count)]
+        screen = await open_row(app, pilot, "#mcp-tool-table", names.index("search"))
+        assert isinstance(screen, tui.HistoryScreen), type(screen)
         hist = screen.query_one("#hist-table", DataTable)
         key = hist.coordinate_to_cell_key((0, 0)).row_key.value
         kind, _, rest = key.partition("\t")
@@ -399,8 +420,12 @@ def test_an_absent_field_reads_as_a_dash_never_as_zero(tracker, clock):
 
 # --- the wide-table machinery under a cap ----------------------------------
 
-def test_a_narrow_screen_keeps_the_name_and_state_and_names_the_cut(tracker, clock):
-    """The plan keeps the order, the name and the state, and names what it dropped.
+def test_a_narrow_screen_keeps_the_name_and_names_the_cut(tracker, clock):
+    """The plan keeps the order and the name, and names what it dropped.
+
+    Tools has no `state` column any more (the host cannot census builtins), so the
+    name and the row key are what must survive here. The censused tabs still protect
+    `state`; the Skills check at the end pins that half of the rule at the same width.
 
     Both directions are asserted because at a wide terminal nothing is hidden and the
     note must be *empty*: a note that always speaks trains people to ignore it.
@@ -429,11 +454,11 @@ def test_a_narrow_screen_keeps_the_name_and_state_and_names_the_cut(tracker, clo
         assert len(headers) < len(tui.TOOLS_COLUMNS), headers
         assert len(headers) >= tui.WideTableMixin.MIN_SHOWN, headers
         # The plan drops from the tail except for what a row cannot be read
-        # without: the name column and the state column stay, `avg`/`last used`
-        # go first. Order is never rearranged.
+        # without: the name column stays; `avg`/`last used` go first. Order is
+        # never rearranged, and no state column exists to protect.
         assert headers == [c for c in tui.TOOLS_COLUMNS if c in headers], headers
         assert headers[0] == tui.TOOLS_COLUMNS[0], headers
-        assert tui._STATE in headers, headers
+        assert tui._STATE not in headers, headers
         note = text_of(app.screen, "#colnote-tools")
         assert note, "a cut with no note is silent"
         for hidden in [c for c in tui.TOOLS_COLUMNS if c not in headers]:
@@ -463,6 +488,16 @@ def test_a_narrow_screen_keeps_the_name_and_state_and_names_the_cut(tracker, clo
         # is built from the uncapped value.
         assert str(table.get_cell_at((0, 0))) == seen["first"]
         assert table.coordinate_to_cell_key((0, 0)).row_key.value == seen["key"]
+
+        # The other half of the protection rule, on a tab that still has a census:
+        # at the same width Skills keeps its name and its state, dropping the
+        # middle counts instead.
+        await tui_tests.activate(app, pilot, "tab-skills")
+        await pilot.press("a")
+        await pilot.pause(0.4)
+        skill_headers = headers_of(app.query_one("#t-skills", DataTable))
+        assert skill_headers[0] == "skill" and tui._STATE in skill_headers, \
+            skill_headers
     tui_tests.drive(make_app(tracker, clock), small, size=(52, 40))
 
 

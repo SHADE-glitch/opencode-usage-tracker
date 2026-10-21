@@ -1683,3 +1683,28 @@ def test_split_unparsed_separates_expected_records_from_new_ones():
     assert expected == 3
     assert unexpected == 3
     assert names == [f"{sync.UNKNOWN_PART_TYPE}:wat", sync.UNPARSEABLE_DATA]
+
+
+def test_sync_refuses_a_future_tracker_before_any_write(host, tracker):
+    """A newer database is not opened for writing at all.
+
+    `open_db` sets WAL mode, so even a failed-but-then-abandoned open can change
+    the file. The version preflight runs first and the file must come back
+    byte-for-byte, with the row a future build wrote still in it.
+    """
+    conn = db.open_db(tracker)
+    db.ensure_schema(conn)
+    conn.execute("UPDATE meta SET value='99' WHERE key='schema_version'")
+    conn.execute("INSERT INTO tool_calls(call_id, tool_name) VALUES('prt_future','shell')")
+    conn.commit()
+    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    conn.close()
+    before = tracker.read_bytes()
+
+    stats = run(host, tracker)
+
+    assert stats["ok"] is False
+    assert stats["schema"] == "newer"
+    assert "newer build" in stats["error"]
+    assert tracker.read_bytes() == before
+    assert rows(tracker, "tool_calls", "call_id='prt_future'")

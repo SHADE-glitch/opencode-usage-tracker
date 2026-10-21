@@ -765,12 +765,18 @@ def backup_dir(db_path=None) -> Path:
     return Path(db_path or DB_PATH).parent / "backups"
 
 
-def snapshot(conn, reason: str = "manual", db_path=None) -> Path:
+def snapshot(conn, reason: str = "manual", db_path=None, protect=()) -> Path:
     """Copy the live database aside using SQLite's online backup API.
 
     ``conn.backup`` rather than a file copy: with WAL on, the newest committed
     frames can still be sitting in ``-wal``, so a copied main file is a stale
     database — exactly the thing you need the snapshot to not be.
+
+    ``protect`` names snapshots the retention sweep must not delete. Restore
+    passes the snapshot it is about to copy: the pre-restore snapshot it takes
+    here can push a full backup directory over the limit, and pruning the source
+    out from under the caller was how a restore replaced the live database with an
+    empty file.
     """
     src = Path(db_path) if db_path else db_file(conn)
     dest_dir = backup_dir(src)
@@ -787,26 +793,36 @@ def snapshot(conn, reason: str = "manual", db_path=None) -> Path:
         conn.backup(target)
     finally:
         target.close()
-    prune_backups(src)
+    prune_backups(src, protect=protect)
     return dest
 
 
-def prune_backups(db_path=None, keep: int = BACKUP_KEEP) -> list[Path]:
+def prune_backups(db_path=None, keep: int = BACKUP_KEEP, protect=()) -> list[Path]:
     """Delete managed snapshots beyond the newest ``keep``.
 
     Only files matching :data:`BACKUP_PATTERN` inside the managed directory are
     eligible. Ordered by mtime, not by name: several snapshots can land in the
     same second, and the ``-1``/``-2`` suffixes that disambiguate them do not sort
     in creation order — trusting them would delete the newer file.
+
+    A protected path is kept even when it is older than the cutoff, so the count
+    can exceed ``keep`` for as long as the caller needs that one file. Deleting a
+    snapshot's ``-wal``/``-shm`` companions too keeps a pruned file from leaving
+    two stale sidecars that the next restore would treat as live state.
     """
     d = backup_dir(db_path)
     if not d.is_dir():
         return []
+    protected = {Path(path).resolve() for path in protect}
     newest_first = sorted(d.glob(BACKUP_PATTERN),
                           key=lambda p: (p.stat().st_mtime, p.name), reverse=True)
-    stale = newest_first[keep:]
+    stale = [p for p in newest_first[keep:] if p.resolve() not in protected]
     for path in stale:
         path.unlink()
+        for suffix in ("-wal", "-shm"):
+            companion = path.with_name(path.name + suffix)
+            if companion.exists():
+                companion.unlink()
     return stale
 
 
@@ -822,10 +838,42 @@ def list_backups(db_path=None) -> list[Path]:
     return sorted(out, key=lambda p: (p.stat().st_mtime, p.name), reverse=True)
 
 
+def _validate_restore_source(conn, path: Path) -> None:
+    """Refuse a file that is not a usable tracker database.
+
+    A zero-byte file is a valid SQLite database and ``quick_check`` says "ok", so
+    the table check is what catches the empty file a bare ``connect()`` creates
+    for a path that does not exist. The restore must fail while the live database
+    is still untouched, not after it has copied emptiness over it.
+    """
+    check = conn.execute("PRAGMA quick_check").fetchone()
+    if not check or check[0] != "ok":
+        raise ValueError(f"backup is damaged: {path} (quick_check: "
+                         f"{check[0] if check else 'no result'})")
+    tables = {row[0] for row in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'")}
+    missing = sorted({"meta", "tool_calls", "sessions"} - tables)
+    if missing:
+        raise ValueError(
+            f"{path} is not an ocut database (missing: {', '.join(missing)})")
+    row = conn.execute(
+        "SELECT value FROM meta WHERE key='schema_version'").fetchone()
+    try:
+        int(row[0])
+    except (TypeError, ValueError, IndexError):
+        raise ValueError(f"{path} has no usable schema_version") from None
+
+
 def restore(backup_path, db_path=None, reason: str = "pre-restore") -> Path:
     """Replace the database with a snapshot, after snapshotting what is live.
 
-    A wrong restore should be undoable, so the current database is copied first.
+    The source is opened read-only and validated *before* anything is changed:
+    it must exist, pass ``quick_check``, and carry the tracker's own tables. The
+    live database is snapshotted next, with that source protected from the
+    retention sweep, and the copy lands in a temporary file that replaces the
+    live one only after it has passed its own ``quick_check``. A failed restore
+    therefore leaves the previous database byte-for-byte in place.
+
     The TUI must not be running: it holds the file open and would keep writing
     into the copy you are replacing.
     """
@@ -833,22 +881,60 @@ def restore(backup_path, db_path=None, reason: str = "pre-restore") -> Path:
     backup_path = Path(backup_path)
     if not backup_path.is_file():
         raise FileNotFoundError(f"no such backup: {backup_path}")
-    if src.exists():
-        conn = sqlite3.connect(src)
-        try:
-            conn.execute("PRAGMA busy_timeout = 5000")
-            snapshot(conn, reason=reason, db_path=src)
-        finally:
-            conn.close()
-    ensure_dir(src)
-    source = sqlite3.connect(backup_path)
-    target = sqlite3.connect(src)
+    if src.exists() and src.resolve() == backup_path.resolve():
+        raise ValueError("the backup is the live database")
+
+    source = open_db(backup_path, readonly=True)
+    tmp = None
     try:
-        target.execute("PRAGMA busy_timeout = 5000")
-        source.backup(target)
+        _validate_restore_source(source, backup_path)
+        ensure_dir(src)
+        mode = None
+        if src.exists():
+            mode = src.stat().st_mode
+            conn = sqlite3.connect(src)
+            try:
+                conn.execute("PRAGMA busy_timeout = 5000")
+                # Replacing the file while a non-empty WAL is beside it would
+                # hand the next connection frames that belong to the old file.
+                busy, _log, _checkpointed = conn.execute(
+                    "PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+                if busy:
+                    raise sqlite3.OperationalError(
+                        "database is locked — close the TUI and retry")
+                snapshot(conn, reason=reason, db_path=src,
+                         protect=(backup_path,))
+            finally:
+                conn.close()
+            for suffix in ("-wal", "-shm"):
+                companion = src.with_name(src.name + suffix)
+                if companion.exists():
+                    companion.unlink()
+
+        tmp = src.with_name(f".{src.name}.restore-{os.getpid()}.tmp")
+        if tmp.exists():
+            tmp.unlink()
+        target = sqlite3.connect(tmp)
+        try:
+            target.execute("PRAGMA busy_timeout = 5000")
+            source.backup(target)
+            check = target.execute("PRAGMA quick_check").fetchone()
+            if not check or check[0] != "ok":
+                raise ValueError(
+                    f"copy failed quick_check: {check[0] if check else 'no result'}")
+        finally:
+            target.close()
+        if mode is not None:
+            os.chmod(tmp, mode & 0o777)
+        os.replace(tmp, src)
+        tmp = None
     finally:
-        target.close()
         source.close()
+        if tmp is not None:
+            for path in (tmp, tmp.with_name(tmp.name + "-wal"),
+                         tmp.with_name(tmp.name + "-shm")):
+                if path.exists():
+                    path.unlink()
     return backup_path
 
 
@@ -868,6 +954,27 @@ def stored_version(conn: sqlite3.Connection) -> int:
         return int(row[0])
     except (TypeError, ValueError, IndexError):
         return 0
+
+
+def is_future_schema(db_path) -> bool:
+    """Whether this file was written by a build newer than this one.
+
+    Read-only on purpose: the caller uses this *before* opening the database for
+    writing, because ``open_db`` switches the file to WAL — a write. A future
+    build's file must come back byte-for-byte unchanged, so the check cannot use
+    the connection that is about to write.
+    """
+    path = Path(db_path)
+    if not path.is_file():
+        return False
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return False
+    try:
+        return stored_version(conn) > SCHEMA_VERSION
+    finally:
+        conn.close()
 
 
 def _retire_undeclared_indexes(conn: sqlite3.Connection) -> list[str]:
@@ -912,11 +1019,23 @@ def ensure_schema(conn: sqlite3.Connection) -> str:
     That runs only on a database this build understands, like every other write
     here.
     """
-    conn.executescript(TABLES_SQL)
-    stored = stored_version(conn)
+    # Read the version before any DDL. `VIEWS_SQL` DROPs the views it knows and
+    # `TABLES_SQL` is additive, but both are writes; a file from a future build
+    # must not receive either.
+    has_meta = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta'").fetchone()
+    stored = stored_version(conn) if has_meta else 0
     if stored > SCHEMA_VERSION:
-        conn.commit()
         return "newer"
+    if 0 < stored < SCHEMA_VERSION:
+        # The bump clears the cursors and (in `sync`) forces a fresh read. That is
+        # destructive, so the copy is taken before the first DDL statement, while
+        # the old schema and every row are still exactly what the last build wrote.
+        # If the snapshot cannot be made, the upgrade does not proceed.
+        path = db_file(conn)
+        if path is not None:
+            snapshot(conn, reason="pre-schema-upgrade", db_path=path)
+    conn.executescript(TABLES_SQL)
     _retire_undeclared_indexes(conn)
     conn.executescript(VIEWS_SQL)
     conn.execute(
@@ -940,13 +1059,15 @@ def migrate(db_path: Path | str = DB_PATH) -> str:
     ``"failed: <sqlite message>"``. A boolean made the last three look like the
     same no-op, which let a locked or damaged file pass as up to date.
     """
+    if is_future_schema(db_path):
+        return "newer"
     try:
         conn = open_db(db_path)
         try:
             return ensure_schema(conn)
         finally:
             conn.close()
-    except sqlite3.Error as exc:
+    except (sqlite3.Error, OSError) as exc:
         return f"failed: {exc}"
 
 
@@ -1008,24 +1129,48 @@ def _on_time(conds) -> tuple[str, list]:
 
 
 def q_tools(conn, limit=None, start_ts=None, end_ts=None):
-    on_time, params = _on_time(_time_conds(start_ts, end_ts, col="c.ts"))
-    sql = (f"{_TOOL_NAMES_CTE}"
-           " SELECT n.name AS tool_name, COUNT(c.call_id) AS calls,"
-           " SUM(CASE WHEN c.status='completed' THEN 1 ELSE 0 END) AS completed,"
-           " SUM(CASE WHEN c.status='error' THEN 1 ELSE 0 END) AS errored,"
-           " SUM(CASE WHEN c.status='running' THEN 1 ELSE 0 END) AS running,"
-           " CAST(AVG(c.duration_ms) AS INTEGER) AS avg_ms,"
-           " MAX(c.ts) AS last_used, MIN(c.ts) AS first_used,"
-           " COUNT(DISTINCT c.project) AS projects,"
-           " COUNT(DISTINCT c.session_id) AS sessions,"
-           " MAX(n.installed) AS installed, MAX(n.ever_used) AS ever_used"
-           # The alias map lives in the join's inner select: the raw table keeps
-           # the spelling the host wrote; the panel counts one row per tool.
-           " FROM names n LEFT JOIN"
-           " (SELECT call_id, status, ts, duration_ms, project, session_id,"
-           "         " + _canonical_name_sql("tool_name") + " AS tool_name"
-           "  FROM tool_calls) c ON c.tool_name = n.name"
-           f"{on_time} GROUP BY n.name ORDER BY calls DESC, n.name")
+    """Tool rows with their calls in the window, ranked by calls.
+
+    The window is applied **inside** one aggregate over ``tool_calls``, and the
+    name union is joined to that result. The older shape put the window in the
+    LEFT JOIN's ON clause and grouped by name, which made SQLite re-scan the
+    canonicalised tool table once for every name in the union — 61 scans of 48k
+    rows on this machine (about 600 ms), against one scan here. An installed name
+    with no call in the window still gets a row, via COALESCE, because the tab's
+    state column needs it.
+
+    ``run`` is every state that has not finished: ``running`` and ``streaming``.
+    Counting only ``running`` made ``calls != ok + fail + run`` on exactly the
+    rows a reader checks first.
+    """
+    where, params = _time_filter(start_ts, end_ts)
+    canonical = _canonical_name_sql("tool_name")
+    sql = (f"{_TOOL_NAMES_CTE},"
+           " agg AS ("
+           "  SELECT " + canonical + " AS tool_name,"
+           "   COUNT(*) AS calls,"
+           "   SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) AS completed,"
+           "   SUM(CASE WHEN status='error' THEN 1 ELSE 0 END) AS errored,"
+           "   SUM(CASE WHEN status IN ('running','streaming') THEN 1 ELSE 0 END)"
+           "     AS running,"
+           "   CAST(AVG(duration_ms) AS INTEGER) AS avg_ms,"
+           "   MAX(category) AS category,"
+           "   MAX(ts) AS last_used, MIN(ts) AS first_used,"
+           "   COUNT(DISTINCT project) AS projects,"
+           "   COUNT(DISTINCT session_id) AS sessions"
+           "  FROM tool_calls" + where +
+           "  GROUP BY " + canonical + ")"
+           " SELECT n.name AS tool_name,"
+           "  COALESCE(a.calls, 0) AS calls,"
+           "  COALESCE(a.completed, 0) AS completed,"
+           "  COALESCE(a.errored, 0) AS errored,"
+           "  COALESCE(a.running, 0) AS running,"
+           "  a.category, a.avg_ms, a.last_used, a.first_used,"
+           "  COALESCE(a.projects, 0) AS projects,"
+           "  COALESCE(a.sessions, 0) AS sessions,"
+           "  n.installed, n.ever_used"
+           " FROM names n LEFT JOIN agg a ON a.tool_name = n.name"
+           " ORDER BY calls DESC, n.name")
     if limit:
         sql += f" LIMIT {int(limit)}"
     return conn.execute(sql, params).fetchall()
@@ -1039,6 +1184,7 @@ def q_skills(conn, limit=None, start_ts=None, end_ts=None):
            " SELECT n.name AS skill, COUNT(s.call_id) AS calls,"
            " SUM(CASE WHEN s.status='completed' THEN 1 ELSE 0 END) AS completed,"
            " SUM(CASE WHEN s.status='error' THEN 1 ELSE 0 END) AS errored,"
+           " CAST(AVG(s.duration_ms) AS INTEGER) AS avg_ms,"
            " MAX(s.ts) AS last_used, MIN(s.ts) AS first_used,"
            " COUNT(DISTINCT s.project) AS projects,"
            " COUNT(DISTINCT s.session_id) AS sessions,"
@@ -1063,7 +1209,10 @@ def q_agents(conn, limit=None, start_ts=None, end_ts=None):
            " SELECT n.name AS agent_type, COUNT(a.call_id) AS calls,"
            " SUM(CASE WHEN a.status='completed' THEN 1 ELSE 0 END) AS completed,"
            " SUM(CASE WHEN a.status='error' THEN 1 ELSE 0 END) AS errored,"
+           " SUM(CASE WHEN a.status IN ('running','streaming') THEN 1 ELSE 0 END)"
+           "   AS running,"
            " COUNT(a.child_session_id) AS children,"
+           " CAST(AVG(a.duration_ms) AS INTEGER) AS avg_ms,"
            " MAX(a.ts) AS last_used, MIN(a.ts) AS first_used,"
            " COUNT(DISTINCT a.project) AS projects,"
            " COUNT(DISTINCT a.session_id) AS sessions,"
@@ -1124,6 +1273,81 @@ def q_mcp(conn, limit=None, start_ts=None, end_ts=None):
     if limit:
         sql += f" LIMIT {int(limit)}"
     return conn.execute(sql, params).fetchall()
+
+
+def q_mcp_servers(conn, limit=None, start_ts=None, end_ts=None):
+    """One row per MCP **server**: the shape the MCP tab shows by default.
+
+    A server is the unit the host config declares, so an installed server with no
+    calls in the window still gets a row with zeroes; the per-tool rows are one
+    level down (`q_mcp_tools`). ``tools_used`` counts the distinct tools called in
+    the window, not every tool a server *offers* — OpenCode exposes that catalogue
+    only through a running server, which this passive reader cannot start.
+    """
+    where, params = _time_filter(start_ts, end_ts, col="ts")
+    sql = (
+        "WITH pairs AS ("
+        " SELECT name AS server, 1 AS installed, 0 AS ever_used"
+        "  FROM inventory WHERE kind='mcp'"
+        " UNION SELECT DISTINCT server, 0, 1 FROM mcp_usage"
+        "  WHERE server IS NOT NULL)"
+        ", names AS ("
+        " SELECT server, MAX(installed) AS installed, MAX(ever_used) AS ever_used"
+        " FROM pairs GROUP BY server)"
+        ", agg AS ("
+        " SELECT server, COUNT(*) AS calls,"
+        "  SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) AS completed,"
+        "  SUM(CASE WHEN status='error' THEN 1 ELSE 0 END) AS errored,"
+        "  SUM(CASE WHEN status IN ('running','streaming') THEN 1 ELSE 0 END)"
+        "    AS running,"
+        "  CAST(AVG(duration_ms) AS INTEGER) AS avg_ms,"
+        "  COUNT(DISTINCT tool) AS tools_used,"
+        "  MAX(ts) AS last_used, MIN(ts) AS first_used,"
+        "  COUNT(DISTINCT project) AS projects,"
+        "  COUNT(DISTINCT session_id) AS sessions"
+        f" FROM mcp_usage{where} GROUP BY server)"
+        " SELECT n.server,"
+        "  COALESCE(a.calls, 0) AS calls,"
+        "  COALESCE(a.completed, 0) AS completed,"
+        "  COALESCE(a.errored, 0) AS errored,"
+        "  COALESCE(a.running, 0) AS running,"
+        "  a.avg_ms, COALESCE(a.tools_used, 0) AS tools_used,"
+        "  a.last_used, a.first_used,"
+        "  COALESCE(a.projects, 0) AS projects,"
+        "  COALESCE(a.sessions, 0) AS sessions,"
+        "  n.installed, n.ever_used"
+        " FROM names n LEFT JOIN agg a ON a.server = n.server"
+        " ORDER BY calls DESC, n.server")
+    if limit:
+        sql += f" LIMIT {int(limit)}"
+    return conn.execute(sql, params).fetchall()
+
+
+def q_mcp_tools(conn, server, limit=None, start_ts=None, end_ts=None):
+    """The tools one MCP server was called with, inside the window.
+
+    Only calls leave evidence of a tool name; a server with no call in the window
+    has an empty list rather than a fabricated catalogue. The ``(server, tool)``
+    pair is the history key two servers sharing a tool name need.
+    """
+    conds = [("server = ?", server)]
+    conds += _time_conds(start_ts, end_ts, col="ts")
+    where = " WHERE " + " AND ".join(c for c, _ in conds)
+    sql = (
+        "SELECT server, tool, COUNT(*) AS calls,"
+        " SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) AS completed,"
+        " SUM(CASE WHEN status='error' THEN 1 ELSE 0 END) AS errored,"
+        " SUM(CASE WHEN status IN ('running','streaming') THEN 1 ELSE 0 END)"
+        "   AS running,"
+        " CAST(AVG(duration_ms) AS INTEGER) AS avg_ms,"
+        " MAX(ts) AS last_used, MIN(ts) AS first_used,"
+        " COUNT(DISTINCT project) AS projects,"
+        " COUNT(DISTINCT session_id) AS sessions"
+        f" FROM mcp_usage{where} GROUP BY server, tool"
+        " ORDER BY calls DESC, tool")
+    if limit:
+        sql += f" LIMIT {int(limit)}"
+    return conn.execute(sql, _cond_params(conds)).fetchall()
 
 
 def q_plugins(conn, start_ts=None, end_ts=None):
@@ -1310,7 +1534,8 @@ def q_entity_summary(conn, kind, name, start_ts=None, end_ts=None, server=None):
         "   AS completed,"
         " COALESCE(SUM(CASE WHEN status='error' THEN 1 ELSE 0 END), 0)"
         "   AS errored,"
-        " COALESCE(SUM(CASE WHEN status='running' THEN 1 ELSE 0 END), 0)"
+        " COALESCE(SUM(CASE WHEN status IN ('running','streaming')"
+        "  THEN 1 ELSE 0 END), 0)"
         "   AS running,"
         " COALESCE(SUM(CASE WHEN status IS NULL THEN 1 ELSE 0 END), 0)"
         "   AS unreported,"
@@ -1864,14 +2089,34 @@ def q_usage_kpi(conn, start_ts=None, end_ts=None) -> dict:
     }
 
 
-def q_usage_request_logs(conn, start_ts, end_ts, limit=100, offset=0):
-    """Per-step rows in the window, newest first (never re-reads the host).
+_USAGE_LOG_ORDER = {
+    "recent": "ts DESC, call_id",
+    "cost": "COALESCE(cost, 0) DESC, ts DESC",
+    "tokens": "COALESCE(total_tokens, 0) DESC, ts DESC",
+    "model": "model COLLATE NOCASE ASC, ts DESC",
+}
+
+
+def q_usage_request_logs(conn, start_ts, end_ts, limit=100, offset=0,
+                         text=None, order_by="recent"):
+    """Per-step rows in the window (never re-reads the host).
 
     Carries both ``total_tokens`` (the host's own step total) and
     ``prompt_total_tokens`` (prompt with the cache read added back), plus the raw
     cache numbers, the step's finish reason and the agent that ran it.
+
+    ``text`` filters in SQL, not over the page: the list is capped at ``limit``,
+    and a client-side filter over the newest 100 would report "no match" for a
+    request that exists on page 2. ``order_by`` is whitelisted for the same reason
+    every other order here is.
     """
     where, params = _ts_where(start_ts, end_ts)
+    if text:
+        like = f"%{text}%"
+        where += (" AND (model LIKE ? OR provider LIKE ? OR project LIKE ?"
+                  " OR agent LIKE ?)")
+        params += [like, like, like, like]
+    order = _USAGE_LOG_ORDER.get(order_by, _USAGE_LOG_ORDER["recent"])
     sql = (
         "SELECT ts, model, provider, variant, agent, prompt_tokens,"
         " completion_tokens, reasoning_tokens,"
@@ -1881,7 +2126,7 @@ def q_usage_request_logs(conn, start_ts, end_ts, limit=100, offset=0):
         " cache_read, cache_write, cost, finish, usage_available, missing,"
         " call_id, message_id, session_id, project"
         f" FROM model_calls WHERE {where}"
-        " ORDER BY ts DESC, call_id LIMIT ? OFFSET ?"
+        f" ORDER BY {order} LIMIT ? OFFSET ?"
     )
     return conn.execute(sql, params + [int(limit), int(offset)]).fetchall()
 
@@ -1970,11 +2215,11 @@ def q_subagent_share(conn, start_ts=None, end_ts=None) -> dict:
 def q_usage_activity(conn, start_ts=None, end_ts=None) -> dict:
     """Windowed tool-runtime rollup for the Dashboard's "more metrics" panel.
 
-    How the calls in the window behaved: ``completed``/``errored``/``running`` are
-    the host's own ``state.status`` values verbatim (measured on this host:
-    `completed`, `error`, `running`, and no others), ``avg_ms`` is the mean tool
-    duration (NULL when nothing ran, never a fabricated 0), and
-    ``sessions``/``projects`` are the DISTINCT ids seen in the window — the
+    How the calls in the window behaved: ``completed`` and ``errored`` are the
+    host's own finished ``state.status`` values; ``running`` is every state that
+    has not finished (`running` and `streaming`), so the three add up to ``calls``.
+    ``avg_ms`` is the mean tool duration (NULL when nothing ran, never a fabricated
+    0), and ``sessions``/``projects`` are the DISTINCT ids seen in the window — the
     windowed form of the all-time ``overview()`` counts. Both bounds ``None``
     means all-time.
     """
@@ -1983,7 +2228,8 @@ def q_usage_activity(conn, start_ts=None, end_ts=None) -> dict:
         "SELECT COUNT(*) AS calls,"
         " SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) AS completed,"
         " SUM(CASE WHEN status='error' THEN 1 ELSE 0 END) AS errored,"
-        " SUM(CASE WHEN status='running' THEN 1 ELSE 0 END) AS running,"
+        " SUM(CASE WHEN status IN ('running','streaming') THEN 1 ELSE 0 END)"
+        "   AS running,"
         " CAST(AVG(duration_ms) AS INTEGER) AS avg_ms,"
         " COUNT(DISTINCT session_id) AS sessions,"
         " COUNT(DISTINCT project) AS projects"
@@ -2025,6 +2271,34 @@ def q_usage_cost_daily(conn, start_ts=None, end_ts=None):
         " SUM(cost) AS cost"
         f" FROM model_calls{where}"
         " GROUP BY day ORDER BY day",
+        params,
+    ).fetchall()
+
+
+def q_usage_hourly(conn, start_ts=None, end_ts=None):
+    """Tool-call counts per LOCAL clock hour — the Today trend's buckets.
+
+    The daily series is one bucket wide on a one-day window, which drew a single
+    block and told the reader nothing. Hours are the useful granularity there.
+    """
+    where, params = _time_filter(start_ts, end_ts, col="ts")
+    return conn.execute(
+        "SELECT strftime('%Y-%m-%d %H:00', ts / 1000, 'unixepoch',"
+        " 'localtime') AS hour, COUNT(*) AS calls"
+        f" FROM tool_calls{where}"
+        " GROUP BY hour ORDER BY hour",
+        params,
+    ).fetchall()
+
+
+def q_usage_cost_hourly(conn, start_ts=None, end_ts=None):
+    """Model-step cost per LOCAL clock hour, aligned with `q_usage_hourly`."""
+    where, params = _time_filter(start_ts, end_ts)
+    return conn.execute(
+        "SELECT strftime('%Y-%m-%d %H:00', ts / 1000, 'unixepoch',"
+        " 'localtime') AS hour, SUM(cost) AS cost"
+        f" FROM model_calls{where}"
+        " GROUP BY hour ORDER BY hour",
         params,
     ).fetchall()
 
@@ -2073,7 +2347,12 @@ def overview(conn) -> dict:
 
     return {
         "tool_calls": one("SELECT COUNT(*) FROM tool_calls"),
-        "distinct_tools": one("SELECT COUNT(DISTINCT tool_name) FROM tool_calls"),
+        # The same canonical spelling the Tools panel uses. Counting raw names
+        # printed 63 while the table showed 61 whenever a host wrote both `bash`
+        # and `shell` (or `task` and `subagent`).
+        "distinct_tools": one(
+            "SELECT COUNT(DISTINCT " + _canonical_name_sql("tool_name")
+            + ") FROM tool_calls"),
         "skills": one("SELECT COUNT(*) FROM skill_usage"),
         "agents": one("SELECT COUNT(*) FROM agent_usage"),
         "mcp": one("SELECT COUNT(*) FROM mcp_usage"),

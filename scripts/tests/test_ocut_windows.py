@@ -181,6 +181,25 @@ def test_a_database_from_a_future_build_is_left_alone_and_says_so(tmp_path):
     conn.close()
 
 
+def test_migrate_does_not_even_switch_a_future_database_to_wal(tmp_path):
+    """The preflight is read-only, so the future file is byte-identical after it.
+
+    `open_db` runs `PRAGMA journal_mode = WAL`, which is itself a write. Checking
+    the version through that connection would change the file the rule says must
+    be left alone.
+    """
+    path = tmp_path / "usage.db"
+    conn = db.open_db(path)
+    db.ensure_schema(conn)
+    conn.execute("UPDATE meta SET value='99' WHERE key='schema_version'")
+    conn.commit()
+    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    conn.close()
+    before = path.read_bytes()
+    assert db.migrate(path) == "newer"
+    assert path.read_bytes() == before
+
+
 def test_a_version_bump_clears_the_cursors_so_nothing_is_read_again(
         tmp_path, monkeypatch):
     """The cursors are the one thing a schema change cannot leave standing.
@@ -207,6 +226,18 @@ def test_a_version_bump_clears_the_cursors_so_nothing_is_read_again(
     # rows are kept: they are re-derivable, and dropping them would silently empty
     # every panel until the next sync
     assert conn.execute("SELECT COUNT(*) FROM tool_calls").fetchone()[0] == 1
+    # The upgrade clears cursors and forces a re-read, so it is destructive enough
+    # to owe a snapshot — taken before the first DDL statement.
+    snapshots = sorted(
+        db.backup_dir(path).glob("usage-*-pre-schema-upgrade.db"))
+    assert snapshots, "a schema bump did not take the promised snapshot"
+    old = sqlite3.connect(snapshots[0])
+    try:
+        assert db.stored_version(old) == db.SCHEMA_VERSION - 1
+        assert old.execute(
+            "SELECT COUNT(*) FROM tool_calls").fetchone()[0] == 1
+    finally:
+        old.close()
     conn.close()
 
 

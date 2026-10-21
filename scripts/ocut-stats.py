@@ -316,27 +316,51 @@ def cmd_models(conn, args):
 def cmd_plugins(conn, args):
     # `uses` comes from plugin_usage, written only by plugin/ocut-hook.js; a
     # plugin the hook has not seen shows 0. Same fields IN THE SAME ORDER as the
-    # TUI's Plugins tab (CodeBuddy's five columns plus a trailing `state`), so the
-    # two surfaces cannot disagree about what is known.
+    # TUI's Plugins tab — what the plugin ships, when it last ran, and a trailing
+    # `state` — so the two surfaces cannot disagree about what is known.
     rows = _rows(db.q_plugins(conn),
-                 ["plugin", "uses", "skills", "agents", "commands",
-                  "installed", "ever_used"])
-    print(table_or(["plugin", "uses", "skills", "agents", "cmds", "state"],
+                 ["plugin", "uses", "tools", "skills", "agents", "commands",
+                  "last_used", "installed", "ever_used"])
+    print(table_or(["plugin", "uses", "tools", "skills", "agents", "cmds",
+                    "last used", "state"],
                    [[r[0], f"{r[1]:,}", f"{r[2]:,}", f"{r[3]:,}", f"{r[4]:,}",
-                     _state(r, "plugin")]
+                     f"{r[5]:,}", ts(r[6]), _state(r, "plugin")]
                     for r in rows],
                    empty="  (none)"))
 
 
 def cmd_show(conn, args):
-    rows = _rows(db.q_history(conn, args.kind, args.name, args.limit),
+    server = args.server
+    if args.kind == "mcp" and server is None:
+        # The MCP row is (server, tool): the column searched is the tool, and two
+        # servers can expose one tool name. Without the server the old command
+        # merged both histories under one heading. Resolve the unambiguous case,
+        # and name the choice when there is one.
+        servers = [row[0] for row in conn.execute(
+            "SELECT DISTINCT server FROM mcp_usage WHERE tool = ?"
+            " ORDER BY server", (args.name,))]
+        if len(servers) == 1:
+            server = servers[0]
+        elif len(servers) > 1:
+            print(f"mcp tool {args.name!r} is exposed by {len(servers)} servers; "
+                  "pass --server:", file=sys.stderr)
+            for name in servers:
+                print(f"  --server {name}", file=sys.stderr)
+            raise SystemExit(2)
+    rows = _rows(db.q_history(conn, args.kind, args.name, args.limit,
+                              server=server),
                  ["ts", "project", "session_id", "status", "duration_ms"])
     if not rows:
-        print(f"no recorded calls for {args.kind} {args.name!r}")
+        scope = f" on {server}" if server else ""
+        print(f"no recorded calls for {args.kind} {args.name!r}{scope}")
         return
-    print(f"{args.kind} {args.name} — {len(rows)} recent calls")
+    heading = f"{args.kind} {args.name}"
+    if server:
+        heading = f"mcp {server} · {args.name}"
+    print(f"{heading} — {len(rows)} recent calls")
     print(table(["when", "project", "session", "status", "dur"],
-                [[ts(r[0]), r[1] or "-", (r[2] or "")[:8], r[3] or "-", ms(r[4])] for r in rows]))
+                [[ts(r[0]), r[1] or "-", (r[2] or "")[:8], r[3] or "-", ms(r[4])]
+                 for r in rows]))
 
 
 def cmd_recent(conn, args):
@@ -354,18 +378,23 @@ def cmd_inventory(conn, args):
 
 
 def cmd_export(conn, args):
+    """Every table and view in the tracker, plus the derived rollups.
+
+    Enumerated from `sqlite_master` rather than a hand-written list: the promise is
+    "every table", and a table added to the schema would otherwise disappear from
+    the backup-like JSON without a single test noticing. The raw call tables,
+    `sync_state`, `unparsed` and `meta` are the ones an incident actually needs;
+    the earlier export kept only model calls and sessions.
+    """
     out = {}
-    for view in ("v_tools", "v_skills", "v_agents", "v_mcp", "v_plugins"):
-        out[view] = [dict(r) for r in conn.execute(f"SELECT * FROM {view}")]
-    out["inventory"] = [dict(r) for r in conn.execute("SELECT * FROM inventory")]
+    for kind in ("table", "view"):
+        names = [row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type=? AND name NOT LIKE 'sqlite_%'"
+            " ORDER BY name", (kind,))]
+        for name in names:
+            out[name] = [dict(r) for r in conn.execute(
+                f'SELECT * FROM "{name}"')]
     out["model_tokens"] = [dict(r) for r in db.q_model_tokens(conn)]
-    out["model_calls"] = [
-        dict(r) for r in conn.execute(
-            "SELECT * FROM model_calls ORDER BY ts DESC")
-    ]
-    out["sessions"] = [
-        dict(r) for r in conn.execute("SELECT * FROM sessions ORDER BY ended_at DESC")
-    ]
     out["overview"] = db.overview(conn)
     print(json.dumps(out, indent=2, ensure_ascii=False))
 
@@ -393,18 +422,35 @@ def cmd_health(conn, args):
         print(f"  settings       NOT READ — {exc}")
     try:
         ver = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
-        print(f"  schema version {ver[0] if ver else '?'}")
-    except sqlite3.Error:
+        stored = int(ver[0]) if ver else None
+        if stored is None:
+            print("  schema version ?")
+        elif stored > db.SCHEMA_VERSION:
+            print(f"  schema version {stored} (build {db.SCHEMA_VERSION}) "
+                  "— newer than this build; sync will not write")
+        else:
+            print(f"  schema version {stored} (build {db.SCHEMA_VERSION})")
+    except (sqlite3.Error, TypeError, ValueError):
         print("  schema version (missing)")
     # The cursor, in the host's own numbers: what we consumed, what the host has.
+    # Two rows are not rowid cursors: `plugin-events` counts bytes in the JSONL
+    # sidecar, and `host-format` is a marker. Printing either in the generic shape
+    # invented "123,871 live rows" for a sidecar holding a few hundred calls.
     # `note` is where a pruned or renumbered host table says so, so it is printed
     # even when the counts look healthy.
     for name, cur, hcount, hmax, note in conn.execute(
             "SELECT name, cursor, host_count, host_max, note FROM sync_state"
             " ORDER BY name").fetchall():
         extra = f" — {note}" if note else ""
-        print(f"  cursor {name:<8} {cur} of host max {hmax} "
-              f"({hcount} live rows){extra}")
+        if name == "plugin-events":
+            calls = conn.execute("SELECT COUNT(*) FROM plugin_usage").fetchone()[0]
+            print(f"  sidecar plugin-events {cur:,} of {hmax:,} bytes "
+                  f"({calls:,} calls indexed){extra}")
+        elif name == "host-format":
+            print(f"  format  {note or '?'} (marker {cur})")
+        else:
+            print(f"  cursor {name:<8} {cur} of host max {hmax} "
+                  f"({hcount} live rows){extra}")
     if conn.execute("SELECT COUNT(*) FROM sync_state").fetchone()[0] == 0:
         print("  cursor           none tracked (never synced, or a schema bump)")
     o = db.overview(conn)
@@ -484,10 +530,10 @@ def cmd_restore(args) -> int:
         return 1
     try:
         db.restore(target, db_path=path)
-    except sqlite3.Error as exc:
-        # Almost always the TUI holding the file open.
+    except (sqlite3.Error, OSError, ValueError) as exc:
+        # Usually the TUI holding the file open, or a file that is not one of ours.
         print(f"could not restore over {path}: {exc}\n"
-              f"  close the TUI (and stop ocut-sync.timer) and retry",
+              f"  the live database was left unchanged; close the TUI and retry",
               file=sys.stderr)
         return 1
     print(f"restored  {path}\n  from      {target}")
@@ -703,15 +749,18 @@ def main(argv=None) -> int:
         p.add_argument("--db", default=argparse.SUPPRESS)
         return p
 
-    for name in ("stats", "health", "plugins", "inventory", "export"):
-        p = sub_with_db(name)
-        p.add_argument("--kind", default=None, help="inventory only: filter by kind")
+    for name in ("stats", "health", "plugins", "export"):
+        sub_with_db(name)
+    inventory = sub_with_db("inventory")
+    inventory.add_argument("--kind", default=None, help="filter by kind")
     for name in ("tools", "skills", "agents", "mcp", "recent", "models",
                  "modes", "sessions"):
         sub_with_db(name).add_argument("--limit", type=int, default=30)
     sp = sub_with_db("show")
     sp.add_argument("kind", choices=["tool", "skill", "agent", "mcp"])
     sp.add_argument("name")
+    sp.add_argument("--server", default=None,
+                    help="MCP only: the server exposing this tool")
     sp.add_argument("--limit", type=int, default=50)
     sub_with_db("backup", help="snapshot the database before a risky step")
     sub_with_db("vacuum", help="compact the database file (snapshots first)")

@@ -168,7 +168,7 @@ ocut
 ```
 
 需要真正的终端（`stdin`/`stdout`/`stderr` 三者都必须是 TTY）。页面：
-**Dashboard / Tools / Skills / Agents / Plugins / MCP / Tokens / Usage**（八个 tab，顺序如上）。
+**Dashboard / Tools / Skills / Agents / MCP / Plugins / Models / Requests**（八个 tab，顺序如上）。
 tab 栏与页脚就是全部按键面：
 
 | 按键 | 作用 |
@@ -176,11 +176,19 @@ tab 栏与页脚就是全部按键面：
 | `q` | 退出 |
 | `r` | 刷新——先跑一次增量同步，再重载当前屏 |
 | `s` | 切换自动同步（那个 30 秒的后台索引器） |
+| `a` | 在实体 tab 上，切换「本窗口用过的行」与「已安装 ∪ 历史全集」 |
+| `o` | 循环切换当前 tab 的排序 |
+| `/` | 打开当前 tab 的过滤框；`enter` 保留，`escape` 清空 |
+| `d` | 选择当前 tab 的时间窗口 |
 | `tab` | 下一个 tab |
 | `shift+tab` | 上一个 tab |
 | `enter` / 双击 | 打开选中行的详情屏 |
 | `c` | 在某个 agent 的历史屏上，打开它的 task 调用产生的子会话 |
-| `escape` / `q` | 从推入的详情屏返回 |
+| `escape` / `q` | 清空当前过滤，或从推入的详情屏返回 |
+
+顶栏保留两个独立控件：**Select** 选固定的预设区间（今天、2 / 3 / 7 / 30 天、全部），
+**📅 Custom…** 打开日历选任意区间。自定义窗口会让 Select 显示 `Custom…`，按钮上写明区间；
+取消选择器会恢复原来的预设。`d` 打开同一个日历。每个 tab 记住自己的选择。
 
 **Dashboard** 是三行面板。第一行是头条计数与 token 合计，每个标签都印在它的数字旁边：
 
@@ -196,21 +204,41 @@ tab 栏与页脚就是全部按键面：
 `Plugins` 数的是该窗口内可选 hook 记到的不同插件数——除非 hook 写了东西，被动读取器没有
 任何证据说明某个插件或命令真的跑过（M3）。
 
-**Tools / Skills / Agents / Plugins / MCP** 五个 tab 一行一个实体，列出调用次数、成功数、
-平均耗时与最近使用；在某行按 `enter` 打开该实体的最近调用历史。两个内置工具在布局换代时改了名
-（v1 的 `bash` → v2 的 `shell`，v1 的 `task` → v2 的 `subagent`），所以 Tools 页在**当前名**下把
-它们显示为**一行**，从任一拼写下钻都能拿到两次历史（M18）。在某个 agent 的历史屏按 `c`，打开
-它的 task 调用产生的**子会话**——各带自己的 token 汇总，因为宿主把子 agent 的步骤记在父会话的账上。**Tokens** tab 是宿主自己
-每步记录汇总出的按模型 token 合计——每个真正回答过的 `(模型, provider)` 一行，配置里只是
-「提供」但没回答过的模型不占行（目录项没有请求也没有 token，而配置里的 id 是路由名，未必
-等于背后真正回答的模型）。历史才是持久的一侧：从配置里移除的模型保留它自己挣到的行。
-**Usage** tab 是你所选窗口的请求日志。每个 tab 各自保留
-自己的时间窗口（`7d` 这类预设，或一段自定义区间），改一个 tab 的窗口不会动另一个。
+**Tools / Skills / Agents / MCP / Plugins / Models** 六个 tab 一行一个实体。每个 tab 默认只列
+**本 tab 窗口内用过**的行；`a` 切换「已安装 ∪ 历史全集」，`o` 循环该 tab 的排序，`/` 过滤
+渲染后的行（`category`、`state` 也能匹配）。Plugins 与 Models 例外：它们的列表本身就是答案，
+始终展示全集。`enter` 用同一个窗口下钻。
 
-每个实体 tab 的最后一列是 **state**，说的是**这一行自己**：只有该行在**本 tab 窗口内**有调用时
-才读作 `in use`，在磁盘上但窗口内没有调用读作 `installed`，不在了读作 `removed`，没有可普查
-依据的读作 `not reported`（M15）。无头报表（`ocut tools` 等）给的是全时段口径，所以问同一个
-问题时两边答案一致。
+- **Tools** —— 一行一个规范工具名，列出宿主自己的 `category`、调用数、ok / fail / run、
+  平均耗时与最近使用。两个内置工具在布局换代时改了名（v1 的 `bash` → v2 的 `shell`，
+  v1 的 `task` → v2 的 `subagent`），所以在**当前名**下显示为**一行**，从任一拼写下钻都能
+  拿到两段历史（M18）。
+- **Skills** —— 调用数、成功数、平均耗时、最近使用与 state。inventory 是真实普查，所以
+  已安装但窗口内没跑的 skill 可以用 `a` 展开，并读作 `installed`。
+- **Agents** —— 调用数、ok / fail、task 调用产生的**子会话数**（children）、平均耗时与
+  最近使用。在某个 agent 的历史屏按 `c`，打开那些**子会话**——各带自己的 token 汇总，
+  因为宿主把子 agent 的步骤记在父会话的账上。
+- **MCP** —— 先按 **server** 聚合，因为 server 才是 OpenCode 配置的单位。`enter` 打开该
+  server 的工具列表，再在某工具上按 `enter` 打开限定在 `(server, tool)` 的调用历史——
+  两个 server 暴露同名工具时仍是两份历史。无头 `ocut mcp` 仍是扁平的按工具表。
+- **Plugins** —— 每个插件带什么（`tools`、`skills`、`agents`、`cmds`）、可选 hook 记到的
+  运行次数、最近使用与 state。
+- **Models** —— 宿主自己每步记录汇总出的按模型 token 合计：每个真正回答过的
+  `(模型, provider)` 一行，配置里只是「提供」但没回答过的模型不占行（目录项没有请求也没有
+  token，而配置里的 id 是路由名，未必等于背后真正回答的模型）。历史才是持久的一侧：
+  从配置里移除的模型保留它自己挣到的行。
+
+**Requests** tab 是你所选窗口的请求日志——一行一个模型步，带项目、agent、模型、provider、
+token 合计、cost 与 cache 明细。每个 tab 各自保留自己的时间窗口（`7d` 这类预设，或一段
+自定义区间），改一个 tab 的窗口不会动另一个。
+
+**state** 只出现在有普查依据的 tab 上——**Skills**、**Plugins**、**MCP**——说的是**这一行
+自己**：只有该行在**本 tab 窗口内**有调用时才读作 `in use`，在磁盘上但窗口内没有调用读作
+`installed`，不在了读作 `removed`（M15）。Tools 与 Agents 不再有 state 列：OpenCode 的
+内置工具 id 与 agent 类型无法被动枚举，旧列在几乎每一行上都只能写 `not reported`；
+`category` 与 `children` 回答数据库真正知道的事。无头报表（`ocut tools` / `ocut agents`）
+仍保留 `not reported` 标签，供脚本区分「没有依据」与 `removed`；全时段口径也在那边，
+`a` 是 TUI 里问同一个问题的方式。
 
 hook 记下的插件调用其 status 是 NULL——工具 after-hook 不带状态，命令则根本没有 after-hook——
 所以插件行的状态列显示 `-`，不是 `0`。
@@ -219,14 +247,14 @@ hook 记下的插件调用其 status 是 NULL——工具 after-hook 不带状�
 
 ```bash
 ocut sync    [--full] [--quiet] [--db PATH] [--host-db PATH] [--host-config PATH] [--plugin-events PATH]
-ocut stats   [--kind K] [--db PATH]
+ocut stats   [--db PATH]
 ocut tools   [--limit N]
 ocut skills  [--limit N]
 ocut agents  [--limit N]
 ocut mcp     [--limit N]
 ocut plugins
 ocut models  [--limit N]
-ocut show    <tool|skill|agent|mcp> <name> [--limit N]
+ocut show    <tool|skill|agent|mcp> <name> [--server NAME] [--limit N]
 ocut recent  [--limit N]
 ocut inventory [--kind K]
 ocut export
@@ -242,8 +270,9 @@ ocut format  [--write]
   v2 是 `session_message`），而会话表每次整表重读，因为宿主会重写它的 rollup。
 - `stats`：所有类别的总览——会话、项目、工具调用、skill / agent / MCP 调用、**已安装**的插件与
   命令、模型步数与 token。
-- `tools` / `skills` / `agents` / `mcp`：某一类别的表。`plugins` 是「已安装 ∪ 已使用」的并集，
-  并带上归属插件的版本与声明路径。
+- `tools` / `skills` / `agents` / `mcp`：某一类别的表。`mcp` 是按工具的扁平表（TUI 会把
+  同一批行先按 server 聚合）；`plugins` 是「已安装 ∪ 已使用」的并集，并带上每个插件提供的
+  内容与 hook 最后一次看到它运行的时间。
 - `models`：宿主自己按步用量（v1 的 `step-finish`，v2 的 assistant message `tokens`）汇总出的按模型
   token 合计，外加最近若干步。`Total` 是宿主自报的那一步总量（如果它给了）；cache read/write 单独
   显示，**不**算进它里面。
@@ -253,8 +282,9 @@ ocut format  [--write]
 - `sessions`：最近的会话，按开始时间倒序，带各自运行所在的 agent 模式、模型、目录、宿主的 token
   汇总与 cost。子 agent 的运行在这里就是一个会话（`sub` 列）；把它藏起来会看错这一天——在本机上
   它们占多数。
-- `show <kind> <name>`：某个实体的最近调用。`recent`：最近的任意工具调用。`inventory`：装了什么、
-  有什么可用。
+- `show <kind> <name>`：某个实体的最近调用。MCP 在同名工具被两个 server 暴露时用
+  `--server NAME` 指定；只有一个 server 时自动解析，有多个时命令会列出选项，而不是把两份
+  历史混在一起。`recent`：最近的任意工具调用。`inventory`：装了什么、有什么可用。
 - `export`：把每个视图与表 dump 成 JSON。
 - `health`：只读报告——库路径、宿主库与配置、解析后的设置、schema 版本、每个同步游标对照宿主自己的
   计数、已索引的合计，以及这个命令存在的意义——`unparsed` 计数。一次「什么都没认领」的运行照样会
@@ -263,9 +293,9 @@ ocut format  [--write]
 - `format`：打印 OpenCode 格式依赖面，从解析器的注册表读出。`--write` 刷新 `docs/maintenance/`
   里那个生成块。
 
-全局取值参数（`--db`、`--kind`、`--limit`、`--host-db`、`--host-config`、`--plugin-events`）可以
-放在子命令**之前或之后**：`ocut --limit 5 tools` 与 `ocut tools --limit 5` 等价。命令名绝不会
-被误当成某个参数的值。
+全局取值参数（`--db`、`--kind`、`--limit`、`--host-db`、`--host-config`、`--plugin-events`、
+`--server`）可以放在子命令**之前或之后**：`ocut --limit 5 tools` 与 `ocut tools --limit 5`
+等价。命令名绝不会被误当成某个参数的值。
 
 ## ⚙️ 设置
 
@@ -278,7 +308,7 @@ ocut format  [--write]
 | 键 | 默认 | 环境变量 | 管什么 |
 |---|---|---|---|
 | `top_n` | `5` | `OCUT_TOP_N` | Dashboard 的 Top models / Top tools 列几行 |
-| `log_limit` | `100` | `OCUT_LOG_LIMIT` | Usage tab 的请求行数 |
+| `log_limit` | `100` | `OCUT_LOG_LIMIT` | Requests tab 的请求行数 |
 | `detail_limit` | `200` | `OCUT_DETAIL_LIMIT` | 历史 / 模型响应屏的行数 |
 | `name_cap` | `28` | `OCUT_NAME_CAP` | 表格单元格渲染多宽，超过就把名字裁掉 |
 | `refresh_secs` | `5` | `OCUT_REFRESH_SECS` | TUI 重绘定时器 |
@@ -359,8 +389,8 @@ OpenCode 自己的状态（只读——从不以写入方式打开）
   `model_calls` 是同一测量的两个粒度，**绝不相加**。
 - `inventory`：装了什么，读自宿主的目录与配置：skills、agents、commands、MCP 服务、插件、
   provider、每个已配置 provider 提供的模型，以及每个插件注册的工具 id。`model` 行的
-  `owner_plugin` 就是它的 provider id。这份目录服务于 `ocut inventory`，**不是** Tokens 行——
-  Tokens 只列真正回答过的模型，所以「提供了但没用过」的模型不会出现在那里。
+  `owner_plugin` 就是它的 provider id。这份目录服务于 `ocut inventory`，**不是** Models 行——
+  Models 只列真正回答过的模型，所以「提供了但没用过」的模型不会出现在那里。
 - `plugin_usage`：hook 看到的每次插件工具/命令调用一行。这是唯一一张数据来自宿主库之外的表。
 - `plugin_surface`：每个插件加载时注册的工具与命令 id，由 hook 上报；`ocut sync` 在文件系统重写
   之后把它折回 `inventory`，并丢掉已不再安装的插件留下的行。
@@ -461,19 +491,19 @@ ocut vacuum            # 压缩文件，并报告回收回来多少
 - **M12** 备份是手动的、只在破坏性操作之前。**没有 systemd** timer 了；保留策略只留最新五份托管快照，
   从不碰手工副本。
 - **M15** `state` 列有四个标签，第四个的意思是**没有证据**。`in use` 与 `installed`
-  之间的选择跟随该行自己的**窗口**：上个月用过、这周没用的工具在 7 天区间里读作
+  之间的选择跟随该行自己的**窗口**：上个月用过、这周没用的 skill 在 7 天区间里读作
   `installed`，因为旁边的 `calls` 格就是 0，一行自相矛盾比忘掉一个区间更糟。`removed`
   与 `not reported` 先由 inventory 决定，所以缩小窗口永远不会改掉一个已经不在的名字。OpenCode 的内置工具与内置 agent id
   存在于它编译后的注册表里：磁盘上没有任何文件能枚举它们，而能回答的 API 需要把 server 跑起来。
-  所以在 Tools 与 Agents 上，一个「有历史、但没有 inventory 行」的名字读作 `not reported`，而不是
-  `removed` —— 这个读取器不会把一个内置工具说成被删了。在 Skills / Plugins / MCP 上 inventory 是
-  完整普查，所以那里的 `removed` 就是字面意思。
+  因此 TUI 在 Tools 与 Agents 上**不再显示 state 列**——一整列 `not reported` 只是噪声；无头
+  `ocut tools` / `ocut agents` 仍保留这个标签，让脚本能把「没有依据」与 `removed` 分开。在
+  Skills / Plugins / MCP 上 inventory 是完整普查，所以那里的 `removed` 就是字面意思。
 - **M16** 只读**全局**的两个外部技能根：`~/.claude/skills` 与 `~/.agents/skills`。OpenCode 还会
   从每个项目加载技能 —— 从会话目录一路向上走到 worktree 根的 `.claude/` 与 `.agents/` —— 外加
   `~/.opencode`、`$OPENCODE_CONFIG_DIR` 和 `skills.paths` / `skills.urls` 配置键。这些**没有**进入
   inventory：前一组需要一个会话目录作为起点，后一组要下载东西，而这个读取器不下载。只装在项目层
   的技能因此不会显示为已安装。把共享技能放进上面两个根之一就会被认到。
-- **M13** Tokens 与 Usage 两张表会显示 `Cache miss` 列和 `Usage Total`，尽管宿主并没有发布这些字段：
+- **M13** Models 与 Requests 两张表会显示 `Cache miss` 列和 `Usage Total`，尽管宿主并没有发布这些字段：
   宿主的用量记录只带一个*未命中缓存*的 `prompt_tokens`，外加 `tokens.cache.read` /
   `tokens.cache.write`（v1 是 `step-finish`，v2 是 assistant 的 `tokens`）。这些标签照搬姊妹项目
   CodeBuddy 的 TUI，所以这是一次**重新标注**，不是新的测量值：`Cache miss` 就是那段未命中缓存的输入，
@@ -490,12 +520,13 @@ ocut vacuum            # 压缩文件，并报告回收回来多少
   `TOOL_CANONICAL` 是这份映射唯一的声明处），`tool_calls` 的原始行保留宿主写下的拼写，单次调用
   详情也照旧显示它，从任一拼写下钻都能拿到两次历史。改名映射对宿主写下的所有行生效——真有第三方
   工具恰好叫 `bash` 也会被合并，但本机历史里没有这种工具（插件工具都以插件名作前缀）。
-- **M17** TUI 的**结构**——八个页、各自的面板与窗口——刻意对齐姊妹项目 CodeBuddy：两个追踪器共用一套
-  心智模型。但**字段是 ocut 自己的**，从 OpenCode 实际记录的内容重新推导，不为对称而照搬，所以页级
-  在宿主不同处已经分岔：Usage/Responses/Tokens 带 `Cost` 列（OpenCode 的每步价格让它成真），Tools 用
-  `run` 而非 cbut 的 `pend`，Dashboard 把 `Failed` 与 `Running` 分开报告。两张**下钻详情屏**和状态行
-  同样用 ocut 自己的字段：OpenCode 没有插件 `target`/`marketplace`，也没有独立于 `cache_read` 的
-  cache hit/miss，所以插件历史与模型响应表**无法逐字**列对列一致——除非凭空造字段。
+- **M17** TUI 的**结构**——八个页、各自的时间窗口、一个 Dashboard——起点是姊妹项目 CodeBuddy：
+  两个追踪器共用一套心智模型。但**字段与边界是 ocut 自己的**，从 OpenCode 实际记录的内容重新推导，
+  不为对称而照搬，所以在宿主不同处已经分岔：Requests/Responses/Models 带 `Cost` 列（OpenCode
+  的每步价格让它成真），Tools 用 `run` 而非 cbut 的 `pend`，Agents 显示派生出的 `children`，
+  MCP 先按 server 聚合再下钻工具，Dashboard 把 `Failed` 与 `Running` 分开报告。两张**下钻详情屏**
+  和状态行同样用 ocut 自己的字段：OpenCode 没有插件 `target`/`marketplace`，也没有独立于
+  `cache_read` 的 cache hit/miss，所以插件历史与模型响应表**无法逐字**列对列一致——除非凭空造字段。
 
 ---
 

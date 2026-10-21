@@ -1590,9 +1590,23 @@ def run(full: bool = False, quiet: bool = False, db_path=db.DB_PATH,
     than an env lookup for that reason: a test that forgot it would pass on a
     machine with no ``~/.agents`` and fail on one that has.
     """
+    # Refuse a database written by a newer build before opening it for writing.
+    # `open_db` switches the file to WAL (a write), and the promise is that a
+    # future file comes back byte-for-byte unchanged.
+    if db.is_future_schema(db_path):
+        return {"ok": False, "schema": "newer",
+                "error": "the tracker database was written by a newer build; "
+                         "this build will not modify it",
+                "unparsed_this_run": 0}
     conn = db.open_db(db_path)
     try:
         status = db.ensure_schema(conn)
+        if status == "newer":
+            conn.commit()
+            return {"ok": False, "schema": "newer",
+                    "error": "the tracker database was written by a newer build; "
+                             "this build will not modify it",
+                    "unparsed_this_run": 0}
         if full:
             if (conn.execute("SELECT COUNT(*) FROM tool_calls").fetchone()[0]
                     or conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]):

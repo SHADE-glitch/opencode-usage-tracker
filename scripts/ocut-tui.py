@@ -81,16 +81,59 @@ def ts(v):
     return datetime.fromtimestamp(v / 1000).strftime("%m-%d %H:%M")
 
 
+def ts_secs(v):
+    """The request log's timestamp: seconds, but no year.
+
+    The page header already names the day/year, and two steps a second apart are
+    distinct rows a request log should be able to tell apart. Dropping the year
+    buys five cells for the token columns on a narrow terminal.
+    """
+    if not v:
+        return "-"
+    return datetime.fromtimestamp(v / 1000).strftime("%m-%d %H:%M:%S")
+
+
 def ms(v):
+    """A duration a person can read at a glance.
+
+    ``question`` calls in this host's history average over 24 minutes; ``1444.7s``
+    was technically exact and practically unreadable. Seconds keep one decimal,
+    minutes and hours roll up.
+    """
     if v is None:
         return "-"
-    return f"{v}ms" if v < 1000 else f"{v / 1000:.1f}s"
+    if v < 1000:
+        return f"{v}ms"
+    total = round(v / 1000)
+    if total < 60:
+        return f"{v / 1000:.1f}s"
+    minutes, seconds = divmod(total, 60)
+    if minutes < 60:
+        return f"{minutes}m {seconds}s" if seconds else f"{minutes}m"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h {minutes}m" if minutes else f"{hours}h"
 
 
 def fmt_n(v):
     """Render a token count, showing ``-`` for NULL (never a fabricated 0)."""
     if v is None:
         return "-"
+    return f"{v:,}"
+
+
+def fmt_compact_n(v):
+    """A grouped number shortened for the Dashboard, never for a table.
+
+    A 12-digit token total pushed the leaderboard's ``req`` onto a second line at
+    160 columns. The tables keep the exact comma-grouped value; this is only for
+    panel lines, where the magnitude is the point.
+    """
+    if v is None:
+        return "-"
+    for unit, scale in (("T", 1e12), ("B", 1e9), ("M", 1e6), ("K", 1e3)):
+        if abs(v) >= scale:
+            text = f"{v / scale:.2f}".rstrip("0").rstrip(".")
+            return f"{text}{unit}"
     return f"{v:,}"
 
 
@@ -164,32 +207,35 @@ def _usage_total_tokens(prompt, completion, cache_read, cache_write):
     return inp + completion + (cache_read or 0)
 
 
-# Usage-page option list (values mirror ocut_db so the two stay in sync).
-# Windows are whole local calendar days ending now ("Today", "2 days", …).
-# "Custom…" is the escape hatch to the date picker; it is never stored as a
-# tab's range (a picked range is a db.CustomWindow instead).
+# The fixed choices in the top bar's Select. "Custom…" is not a range: it opens
+# the date picker, which is the other control beside it. The two exist together
+# because a preset is one click and a custom span needs a calendar — folding them
+# into one menu made every preset two clicks and hid which one was active.
 RANGE_OPTIONS = [(db.USAGE_RANGE_LABELS[k], k)
                  for k in ("1d", "2d", "3d", "7d", "30d", "all")] + [
     ("Custom…", "custom")]
 CUSTOM_RANGE = "custom"
-# The Usage page is a single Request Logs list, one row per OpenCode
-# `step-finish` part. The column set and labels are CodeBuddy's TUI verbatim:
-# time · model · provider · usage total · input · output · API total ·
-# cache hit/miss/write · cache hit rate. The cache vocabulary is CodeBuddy's,
-# mapped onto OpenCode's fields — its uncached `prompt_tokens` is the cache miss,
-# `cache_read` the hit, `cache_write` the write (see `_input_tokens`).
-# `Cost` is the one column CodeBuddy cannot have: OpenCode records a per-step
-# price, so the money a window spent is a measurement here rather than an
-# estimate. It sits right after `API Total` — the two numbers a reader compares —
-# and ahead of the cache detail so a narrow terminal drops cache before money.
-USAGE_COLUMNS = ("Time", "Model", "Provider", "Usage Total", "Input", "Output",
-                 "API Total", "Cost", "Cache hit", "Cache miss",
-                 "Cache write", "Cache hit rate")
 
-# Tokens-tab column order, the same set CodeBuddy's Tokens tab shows.
-TOKEN_COLUMNS = ("Model", "Provider", "Usage Total", "Requests", "Input",
-                 "Output", "API Total", "Cost", "Cache hit", "Cache miss",
-                 "Cache write")
+# The Requests page is a single request log, one row per model step. The cache
+# vocabulary is CodeBuddy's, mapped onto OpenCode's fields — its uncached
+# `prompt_tokens` is the cache miss, `cache_read` the hit, `cache_write` the write
+# (see `_input_tokens`). `Project` and `Agent` are OpenCode's own fields: they
+# answer "where was this spent" and "which mode spent it", which a request log that
+# only names the model cannot.
+# Metrics first, context later. The plan keeps a prefix, so the order is the
+# narrow-terminal priority: the token/cost columns must survive even when the
+# project and agent have to drop. `Time` and `Model` are the row's identity —
+# the plan protects those two columns — and the provider and raw cache counts
+# remain one keypress away on the call's detail screen.
+USAGE_COLUMNS = ("Time", "Model", "Usage Total", "Input", "Output", "API Total",
+                 "Cost", "Cache hit rate", "Project", "Agent", "Provider",
+                 "Cache hit", "Cache miss", "Cache write")
+
+# Models-tab column order. Share and Hit rate are derived from the row's own
+# numbers; the cache counts stay so a reader can see what the rate was made of.
+TOKEN_COLUMNS = ("Model", "Provider", "Requests", "Usage Total", "Share",
+                 "Input", "Output", "API Total", "Cost", "Cache hit rate",
+                 "Cache hit", "Cache miss", "Cache write")
 
 # Entity tabs and the two detail screens. Declared here rather than inline at
 # `add_columns` because the column plan needs the full list to compute a prefix from,
@@ -200,16 +246,31 @@ TOKEN_COLUMNS = ("Model", "Provider", "Usage Total", "Requests", "Input",
 # so a narrow terminal loses "last used" before it loses the answer to "is this
 # thing still installed".
 _STATE = db.ENTITY_STATE_COLUMN
-# ``run`` is the host's third status. Without it `ok` + `fail` fell short of
-# `calls` and nothing said why — while `ocut tools` had the column, and the
-# drill-down's summary line already printed "N running".
-TOOLS_COLUMNS = ("tool", "calls", "ok", "fail", "run", "avg", "last used", _STATE)
-SKILLS_COLUMNS = ("skill", "calls", "ok", "last used", _STATE)
-AGENTS_COLUMNS = ("agent", "calls", "last used", _STATE)
+# ``run`` is every state that has not finished (`running` and `streaming`), so
+# calls = ok + fail + run. `category` separates a builtin from an MCP tool without
+# sending the reader to another tab; the state column is gone from this table
+# because the host has no census of builtin tools, so it read "not reported" on
+# every row that mattered.
+TOOLS_COLUMNS = ("tool", "category", "calls", "ok", "fail", "run", "avg",
+                 "last used")
+# Skills keep `state`: `inventory` is a real census, so installed/removed means
+# something here. Failures and average duration answer the same questions Tools
+# does, and were already in the query.
+SKILLS_COLUMNS = ("skill", "calls", "ok", "fail", "avg", "last used", _STATE)
+# Agents have no inventory census (`ENTITY_CENSUS["agent"]` is false), so the old
+# state column said "not reported" on every row. Children is the subagent count the
+# host makes visible; it replaces a label that carried no information.
+AGENTS_COLUMNS = ("agent", "calls", "ok", "fail", "children", "avg", "last used")
 # `uses` is real — plugin/ocut-hook.js writes it — so 0 means "nothing recorded",
-# never "not used". The three counts are what the plugin ships.
-PLUGINS_COLUMNS = ("plugin", "uses", "skills", "agents", "cmds", _STATE)
-MCP_COLUMNS = ("server", "tool", "calls", "ok", "last used", _STATE)
+# never "not used". The counts are what the plugin ships, plus when it last ran.
+PLUGINS_COLUMNS = ("plugin", "uses", "tools", "skills", "agents", "cmds",
+                   "last used", _STATE)
+# The MCP tab is server-level: OpenCode configures servers, and a per-tool list of
+# every tool a server has ever seen buried the servers themselves. Enter opens the
+# tools of one server, then the calls of one tool.
+MCP_COLUMNS = ("server", "calls", "ok", "fail", "run", "tools", "avg",
+               "last used", _STATE)
+MCP_TOOL_COLUMNS = ("tool", "calls", "ok", "fail", "run", "avg", "last used")
 HISTORY_COLUMNS = ("when", "project", "session", "status", "duration")
 # q_plugin_history selects from `plugin_usage` (the hook's sidecar), so one row
 # here is one tool or command call the hook saw a plugin make. It carries the
@@ -237,6 +298,10 @@ CHILD_COLUMNS = ("started", "dur", "agent", "model", "in", "out", "reason",
 # WIDE_TABLES entry, refresh list) — the shape that let one panel miss its
 # window for a whole round. Dashboard and Usage stay out: they draw panels, not
 # one table, and their layout is genuinely different.
+_SORT_CALLS = (("calls", "calls", True), ("recent", "last_used", True),
+               ("name", None, False), ("fails", "errored", True))
+
+
 class EntityTab(NamedTuple):
     pane: str
     title: str
@@ -254,54 +319,83 @@ class EntityTab(NamedTuple):
     # provider cell is a display label, the stored value is what the drill-down
     # filters on, and a name may be capped on a narrow screen.
     key_columns: tuple = ()
+    # What `enter` should push. MCP's rows now name a server, not a (server, tool)
+    # pair, and the same row key shape cannot open both screens.
+    key_kind: str = ""
+    # False: default to rows with a call in the window; `a` shows the full union.
+    # Plugins and Models are always full: their list *is* the inventory/usage set,
+    # and hiding a 0-use plugin or a zero-token answering model loses the answer.
+    always_all: bool = False
+    # The raw row key whose value is this tab's windowed count, for the boundary
+    # filter and the summary line.
+    count_key: str = "calls"
+    # (label, raw field, descending) cycled by `o`; the tab's query order is mode 0.
+    sort_fields: tuple = _SORT_CALLS
+    # The raw field that names a row, used by the `name` sort mode. A None key
+    # means "the first sort field's name"; spelled explicitly rather than guessed.
+    name_key: str = ""
 
 
 def _tool_row(r, kind):
-    # The host's three statuses, one column each: `ok` is `completed`, `fail` is
-    # `error`, `run` is `running` (a call still in flight). Counting `running` as
-    # a failure would invent an error; leaving it out left calls > ok + fail.
-    return [r["tool_name"], f"{r['calls']:,}", f"{r['completed']:,}",
-            f"{r['errored']:,}", f"{r['running']:,}", ms(r["avg_ms"]),
-            ts(r["last_used"]), state_cell(r, kind, r["calls"])]
+    # `run` includes every unfinished state. `category` is the host's own
+    # builtin/skill/agent/mcp classification; an installed row with no call has
+    # none, and renders "-" rather than inventing one.
+    return [r["tool_name"], r["category"] or "-", f"{r['calls']:,}",
+            f"{r['completed']:,}", f"{r['errored']:,}", f"{r['running']:,}",
+            ms(r["avg_ms"]), ts(r["last_used"])]
 
 
 def _skill_row(r, kind):
     return [r["skill"], f"{r['calls']:,}", f"{r['completed']:,}",
-            ts(r["last_used"]), state_cell(r, kind, r["calls"])]
+            f"{r['errored']:,}", ms(r["avg_ms"]), ts(r["last_used"]),
+            state_cell(r, kind, r["calls"])]
 
 
 def _agent_row(r, kind):
-    return [r["agent_type"], f"{r['calls']:,}", ts(r["last_used"]),
-            state_cell(r, kind, r["calls"])]
+    return [r["agent_type"], f"{r['calls']:,}", f"{r['completed']:,}",
+            f"{r['errored']:,}", f"{r['children']:,}", ms(r["avg_ms"]),
+            ts(r["last_used"])]
 
 
 def _plugin_row(r, kind):
     # `uses` is what the hook recorded inside the window, so state follows it:
     # an installed plugin with no call in range reads `installed`, not `in use`.
-    return [r["plugin"], f"{r['uses']:,}", f"{r['skills']:,}",
-            f"{r['agents']:,}", f"{r['commands']:,}",
-            state_cell(r, kind, r["uses"])]
+    return [r["plugin"], f"{r['uses']:,}", f"{r['tools']:,}",
+            f"{r['skills']:,}", f"{r['agents']:,}", f"{r['commands']:,}",
+            ts(r["last_used"]), state_cell(r, kind, r["uses"])]
 
 
-def _mcp_row(r, kind):
-    return [r["server"], r["tool"], f"{r['calls']:,}",
-            f"{r['completed']:,}", ts(r["last_used"]),
+def _mcp_server_row(r, kind):
+    return [r["server"], f"{r['calls']:,}", f"{r['completed']:,}",
+            f"{r['errored']:,}", f"{r['running']:,}",
+            f"{r['tools_used']:,}", ms(r["avg_ms"]), ts(r["last_used"]),
             state_cell(r, kind, r["calls"])]
 
 
+def _mcp_tool_row(r, kind):
+    return [r["tool"], f"{r['calls']:,}", f"{r['completed']:,}",
+            f"{r['errored']:,}", f"{r['running']:,}", ms(r["avg_ms"]),
+            ts(r["last_used"])]
+
+
 def _token_row(r, kind):
-    """One Tokens row. API Total is the host's step total; Usage Total is the
+    """One Models row. API Total is the host's step total; Usage Total is the
     display-only cache-hit re-add, and the three cache columns are CodeBuddy's
     hit/miss/write mapped onto OpenCode's read/input/write."""
+    hit = db.cache_hit_rate(r["cache_read"], r["prompt_tokens"],
+                            r["cache_write"])
+    share = r["share_pct"] if "share_pct" in r.keys() else None
     return [r["model"], db.provider_label(r["provider"]),
+            f"{r['responses']:,}",
             fmt_n(_usage_total_tokens(r["prompt_tokens"],
                                       r["completion_tokens"],
                                       r["cache_read"], r["cache_write"])),
-            f"{r['responses']:,}",
+            "-" if share is None else f"{share:.1f}%",
             fmt_n(_input_tokens(r["prompt_tokens"], r["cache_read"],
                                 r["cache_write"])),
             fmt_n(r["completion_tokens"]),
             fmt_n(r["total_tokens"]), fmt_cost(r["cost"]),
+            "-" if hit is None else f"{hit * 100:.1f}%",
             fmt_n(r["cache_read"]),
             fmt_n(r["prompt_tokens"]),
             fmt_n(r["cache_write"])]
@@ -309,22 +403,30 @@ def _token_row(r, kind):
 
 ENTITY_TABS = (
     EntityTab("tab-tools", "Tools", "t-tools", "colnote-tools",
-              TOOLS_COLUMNS, "q_tools", _tool_row, "No tool calls yet", "tool"),
+              TOOLS_COLUMNS, "q_tools", _tool_row, "No tool calls yet", "tool",
+              name_key="tool_name"),
     EntityTab("tab-skills", "Skills", "t-skills", "colnote-skills",
               SKILLS_COLUMNS, "q_skills", _skill_row, "No skills used yet",
-              "skill"),
+              "skill", name_key="skill"),
     EntityTab("tab-agents", "Agents", "t-agents", "colnote-agents",
               AGENTS_COLUMNS, "q_agents", _agent_row, "No agents used yet",
-              "agent"),
+              "agent", name_key="agent_type"),
+    EntityTab("tab-mcp", "MCP", "t-mcp", "colnote-mcp", MCP_COLUMNS,
+              "q_mcp_servers", _mcp_server_row, "No MCP servers", "mcp",
+              key_kind="mcp_server", name_key="server"),
     EntityTab("tab-plugins", "Plugins", "t-plugins", "colnote-plugins",
               PLUGINS_COLUMNS, "q_plugins", _plugin_row, "No plugins installed",
-              "plugin"),
-    EntityTab("tab-mcp", "MCP", "t-mcp", "colnote-mcp", MCP_COLUMNS, "q_mcp",
-              _mcp_row, "No MCP calls yet", "mcp", key_index=(0, 1)),
-    EntityTab("tab-tokens", "Tokens", "t-tokens", "colnote-tokens",
+              "plugin", always_all=True, count_key="uses", name_key="plugin",
+              sort_fields=(("uses", "uses", True), ("recent", "last_used", True),
+                           ("name", None, False))),
+    EntityTab("tab-tokens", "Models", "t-tokens", "colnote-tokens",
               TOKEN_COLUMNS, "q_model_tokens", _token_row,
               "No model responses yet", "model", key_index=(0, 1),
-              key_columns=("model", "provider")),
+              key_columns=("model", "provider"), always_all=True,
+              count_key="responses", name_key="model",
+              sort_fields=(("requests", "responses", True),
+                           ("tokens", "total_tokens", True),
+                           ("name", None, False))),
 )
 ENTITY_BY_PANE = {tab.pane: tab for tab in ENTITY_TABS}
 
@@ -398,10 +500,12 @@ if HAVE_TEXTUAL:
         TopBar > #topbar-title { width: 1fr; padding: 0 1; content-align: left middle;
                                  text-wrap: nowrap; text-overflow: ellipsis; }
         TopBar > #date-range { width: auto; min-width: 0; height: 1; border: none;
-                               padding: 0 1; background: $panel; color: $foreground; }
+                               padding: 0 1; background: $panel; color: $accent;
+                               text-style: bold; }
         TopBar > #date-range:hover { background: $boost; }
         TopBar > #range { width: 30; }
-        TopBar > #range SelectCurrent { border: none; padding: 0 1; background: $panel; }
+        TopBar > #range SelectCurrent { border: none; padding: 0 1; background: $panel;
+                                        color: $accent; }
         """
 
         def __init__(self, title: str, *, with_range: bool = False,
@@ -414,23 +518,25 @@ if HAVE_TEXTUAL:
         def compose(self) -> ComposeResult:
             yield Static(self._title, id="topbar-title")
             if self._with_range:
-                # A compact 📅 control showing the active tab's window; pressing it
-                # opens the date picker (same as picking "Custom…" in the Select).
-                yield Button("📅", id="date-range")
+                # Two controls, two jobs: the Select picks a fixed preset, and the
+                # button opens the calendar for a custom span. They used to print
+                # the same label twice ("Today Today"); the button now reads
+                # "Custom…" while a preset is active, and the chosen span once a
+                # custom window is in force.
+                yield Button("📅 Custom…", id="date-range")
                 yield Select(RANGE_OPTIONS, value=self._range_value,
                              allow_blank=False, id="range")
 
-        def set_range_label(self, text: str) -> None:
-            """Show the active tab's window on the 📅 control ('' hides it)."""
+        def set_range_label(self, text: str, custom: bool = False) -> None:
+            """Name the custom span, or offer the picker when a preset is active."""
             try:
                 btn = self.query_one("#date-range", Button)
             except Exception:
                 return
-            btn.label = f"📅 {text}" if text else "📅"
-            btn.display = bool(text)
+            btn.label = f"📅 {text} ▾" if custom and text else "📅 Custom…"
             # A Button does not re-lay-out when its label grows, so the control
-            # kept the width it was built with ("📅 Today" = 10 cells) and cut
-            # the longer span down to "📅 10-06" until the next full relayout.
+            # kept the width it was built with and cut the longer span down until
+            # the next full relayout.
             btn.refresh(layout=True)
 
     class TimeInput(Input):
@@ -926,6 +1032,11 @@ if HAVE_TEXTUAL:
         """
 
         CELL_COST = 2
+        # A vertically scrolling DataTable paints its scrollbar over the last
+        # cell, so a plan that fills the region exactly loses a character off the
+        # final header. One reserved cell is cheaper than a clipped column, and
+        # tables short enough not to scroll simply end one cell early.
+        SCROLLBAR_CELL = 1
         MIN_SHOWN = 2      # never narrow a table down to a single unnamed column
         # Measured on this machine's database, not guessed: every entity name fits
         # 28 cells (tool 22, model 24, agent 20, plugin 19, mcp tool 23, skill 28,
@@ -1094,7 +1205,7 @@ if HAVE_TEXTUAL:
             shown = [[self._cap_cell(c) for c in rr] for rr in raw]
             capped = any(a != b for rr, ss in zip(raw, shown) for a, b in zip(rr, ss))
             full = self._column_widths(labels, raw)
-            budget = width - chrome
+            budget = width - chrome - self.SCROLLBAR_CELL
             if sum(full) + self.CELL_COST * len(labels) <= budget:
                 # Everything fits at its real length, so the cap stays out: a wide
                 # terminal has no reason to lose characters, and "widen to N" would
@@ -1146,7 +1257,7 @@ if HAVE_TEXTUAL:
             cuts = used_width(indices) > budget
             note.update(f"{len(indices)} of {len(labels)} columns · hidden: "
                         f"{', '.join(hidden)} · widen to "
-                        f"{sum(full) + self.CELL_COST * len(labels) + chrome}"
+                        f"{sum(full) + self.CELL_COST * len(labels) + chrome + self.SCROLLBAR_CELL}"
                         + (" · even these are cut" if cuts else "")
                         + cap_note)
             note.display = True
@@ -1445,6 +1556,71 @@ if HAVE_TEXTUAL:
             self._fill_wide("child-table", rows,
                             "No child sessions recorded for this agent")
 
+    class McpServerScreen(WideTableMixin, Screen):
+        """The tools one MCP server was called with, then the calls of one tool.
+
+        The MCP tab groups by server because that is the unit OpenCode configures;
+        this screen is the middle level. The window is the parent tab's, passed
+        down unchanged, so every level answers for the same range.
+        """
+
+        BINDINGS = [Binding("escape,q", "app.pop_screen", "Back")]
+        WIDE_TABLES = {"mcp-tool-table": (MCP_TOOL_COLUMNS, "colnote-mcp-tool", 0)}
+
+        @property
+        def name_cap(self) -> int:
+            return self.app.name_cap
+
+        def __init__(self, server: str, start_ts=None, end_ts=None,
+                     window_label: str = "all time"):
+            super().__init__()
+            self.server = server
+            self.start_ts = start_ts
+            self.end_ts = end_ts
+            self.window_label = window_label
+            self._wide_rows = {}
+
+        def compose(self) -> ComposeResult:
+            yield TopBar(f"mcp · {self.server}")
+            yield Vertical(
+                Static(f"[b]MCP server[/b] · {self.server}", id="mcp-title"),
+                Static(id="mcp-summary", classes="entity-summary"),
+                Static(id="colnote-mcp-tool", classes="col-note"),
+                DataTable(id="mcp-tool-table", zebra_stripes=True),
+            )
+            yield Footer()
+
+        def on_mount(self) -> None:
+            self.title = f"MCP: {self.server}"
+            self.query_one("#mcp-tool-table", DataTable).cursor_type = "row"
+            conn = db.open_db(self.app.db_path, readonly=True)
+            try:
+                found = list(db.q_mcp_tools(
+                    conn, self.server, limit=self.app.DETAIL_LIMIT,
+                    start_ts=self.start_ts, end_ts=self.end_ts))
+            finally:
+                conn.close()
+            rows = [[r["tool"], f"{r['calls']:,}", f"{r['completed']:,}",
+                     f"{r['errored']:,}", f"{r['running']:,}", ms(r["avg_ms"]),
+                     ts(r["last_used"])] for r in found]
+            calls = sum(r["calls"] for r in found)
+            summary = (f"{count_n(calls, 'call')} · "
+                       f"{count_n(len(found), 'tool')} · {self.window_label}")
+            if not found:
+                summary = f"no tool calls in this window · {self.window_label}"
+            self.query_one("#mcp-summary", Static).update(summary)
+            # The server travels inside the key: the App owns the row-select route
+            # (one handler, one screen), and the tool column alone cannot tell it
+            # which server this list belongs to. `key_rows` carries the pair without
+            # spending a visible column on the server name already in the title.
+            self._fill_wide(
+                "mcp-tool-table", rows,
+                "No tool calls in this window",
+                key_index=0, key_kind="mcp_tool",
+                key_rows=[[f"{self.server}\t{r['tool']}"] for r in found])
+            self.query_one("#mcp-tool-table", DataTable).focus()
+
+
     class CallDetailScreen(Screen):
         """Every field of one call, pushed from a drill-down row.
 
@@ -1495,14 +1671,11 @@ if HAVE_TEXTUAL:
         #call-body { height: 1fr; overflow-y: auto; padding: 0 1; }
         .call-label { width: 18; color: $text-muted; }
         .call-value { width: 1fr; }
-        /* Summary pages (Dashboard + Usage). Both share .usage-panel /
-           .panel-title. The Usage page has one .summary-panels row (height
-           capped, scrolls internally so its table below keeps its rows). The
-           Dashboard is a stack of .dash-row rows; #dash-box scrolls. Each row
-           is a Horizontal; .compact stacks it on narrow terminals. */
+        /* The Dashboard is a stack of .dash-row rows; #dash-box scrolls. Each row
+           is a Horizontal on wide terminals, a two-column grid in the middle, and
+           one column only when two would wrap a panel line. */
         #usage-box, #dash-box { height: 1fr; padding: 0 1; }
         #dash-box { overflow-y: auto; }
-        .summary-panels { height: auto; max-height: 40%; overflow-y: auto; }
         .usage-panel {
             border: round $primary;
             padding: 0 1;
@@ -1510,10 +1683,14 @@ if HAVE_TEXTUAL:
             width: 1fr;
             height: auto;
         }
-        #panel-runtime, #panel-dash-cache, #panel-dash-tools,
+        #panel-dash-cache, #panel-dash-tools,
         #panel-dash-activity, #panel-dash-modes { margin: 0; }
         .panel-title { text-style: bold; color: $accent; }
-        #usage-status, #usage-window { padding: 0; }
+        /* Requests is one table with a compact two-line header. The old four
+           bordered panels consumed 40% of a short terminal and then clipped their
+           own lower row. */
+        .usage-window-line { padding: 0 1; height: auto; }
+        .usage-summary-line { padding: 0 1; color: $text-muted; height: auto; }
         #usage-note, #dash-note { padding: 0 1; color: $text-muted; }
         /* One line per wide table, only when columns were dropped — an always-on
            note above a table that hides nothing is noise that costs a row. Auto
@@ -1523,31 +1700,38 @@ if HAVE_TEXTUAL:
         #dash-activity, #dash-cost { color: $accent; }
         #dash-activity-axis, #dash-cost-axis { color: $text-muted; }
         #t-usage { height: 1fr; min-height: 6; }
-        .summary-panels.compact, .dash-row.compact { layout: vertical; }
-        /* Stacked one-per-row wastes the width a narrow terminal still has: at
-           80x24 four stacked panels push the table's rows off the visible area.
-           Two columns keep a 24-char panel line plus its border and padding
-           (~28 cells) legible and leave the table room. */
-        .summary-panels.compact { layout: grid; grid-size: 2; }
-        /* Below two cells' minimum, stacking is the only layout that does not
-           wrap a panel line mid-value. */
-        .summary-panels.compact.stacked { layout: vertical; }
-        .summary-panels.compact .usage-panel,
+        .dash-row.compact { layout: grid; grid-size: 2; }
+        .dash-row.compact.stacked { layout: vertical; }
         .dash-row.compact .usage-panel { width: 100%; margin: 0 0 1 0; }
+        /* Inside a grid row, fill the cell so two panels end on one border line.
+           Not under the stacked layout: "100%" of a scrolling auto-height column
+           clips every panel after its first few lines. */
+        .dash-row.two-col .usage-panel { height: 100%; }
+        /* Two columns leave the third panel of a three-panel row alone beside a
+           hole. Cache and Top modes span both instead, which reads as a summary
+           strip rather than a layout accident. */
+        .dash-row.compact #panel-dash-cache,
+        .dash-row.compact #panel-dash-modes { column-span: 2; }
         .dash-row { height: auto; margin: 0 0 1 0; }
+        /* A filter row exists only while it is in use; a permanent search box
+           spends a row on every page for a control most visits never touch. */
+        #filter { display: none; height: 1; border: none; padding: 0 2;
+                  background: $boost; color: $foreground; }
         """
         # Pane ids in display order. Used for wrap-around tab cycling. Derived
         # from the same registry that builds the panes, the columns and the fill
         # calls, so a new entity panel cannot appear in one list and miss another.
         TAB_IDS = ["tab-dashboard"] + [t.pane for t in ENTITY_TABS] + ["tab-usage"]
-        # The tab shown on launch. The TopBar Select must start on this tab's
-        # own range (see compose), or its mount-time Changed would overwrite
-        # that tab's default before the user touches anything.
         INITIAL_TAB = "tab-dashboard"
         BINDINGS = [
             Binding("q", "quit", "Quit"),
             Binding("r", "refresh", "Refresh"),
             Binding("s", "toggle_auto_sync", "Auto sync"),
+            Binding("a", "toggle_all", "All rows"),
+            Binding("o", "cycle_sort", "Sort"),
+            Binding("slash", "focus_filter", "Filter"),
+            Binding("d", "date_range", "Date"),
+            Binding("escape", "clear_filter", "Clear filter", show=False),
             Binding("tab", "next_tab", "Next tab", priority=True),
             Binding("shift+tab", "previous_tab", "Prev tab", priority=True),
         ]
@@ -1603,6 +1787,22 @@ if HAVE_TEXTUAL:
             self._last_refresh = None      # epoch ms
             self._last_sync = None         # epoch ms
             self._usage_ready = False
+            # Per entity tab: the default is "used in this window"; `a` flips to
+            # the full installed ∪ history union. Plugins/Models opt out because
+            # their full set is the answer, not the noise.
+            self._show_all = {}
+            # Per tab sort mode: 0 is the query's own order, then the tab's
+            # declared fields. Kept per tab so one page's order never moves another.
+            self._sort_mode = {}
+            # Per tab live filter text. Applied to the rendered cells, so it can
+            # match a category or a state as well as a name. Not named
+            # `_filters`: App owns that attribute for Rich line filters, and
+            # overwriting it with a dict breaks Footer rendering with an
+            # AttributeError deep inside Textual.
+            self._tab_filters = {}
+            # Set while the app writes the shared Input during a tab switch, so a
+            # programmatic value does not count as a user edit.
+            self._loading_filter = False
             # table id -> (rows, empty message, key index, key kind) for the two
             # wide tables, so a resize can re-plan them without re-querying.
             self._wide_rows = {}
@@ -1622,8 +1822,7 @@ if HAVE_TEXTUAL:
 
         def compose(self) -> ComposeResult:
             yield TopBar(self.TITLE, with_range=True,
-                         range_value=self.tab_range[self.INITIAL_TAB],
-                         id="topbar")
+                         range_value=self.tab_range[self.INITIAL_TAB], id="topbar")
             with TabbedContent(initial=self.INITIAL_TAB):
                 with TabPane("Dashboard", id="tab-dashboard"):
                     yield Vertical(
@@ -1694,7 +1893,8 @@ if HAVE_TEXTUAL:
                                 classes="usage-panel", id="panel-dash-runtime",
                             ),
                             Vertical(
-                                Static("Calls / cost per day", classes="panel-title"),
+                                Static("Calls / cost per day", id="dash-activity-title",
+                                       classes="panel-title"),
                                 Static(id="dash-activity"),
                                 Static(id="dash-activity-axis"),
                                 # OpenCode prices each step, so cost has its own
@@ -1710,47 +1910,22 @@ if HAVE_TEXTUAL:
                     )
                 for tab in ENTITY_TABS:
                     with TabPane(tab.title, id=tab.pane):
+                        yield Static(id=f"{tab.table_id}-summary",
+                                     classes="entity-summary")
                         yield Static(id=tab.note_id, classes="col-note")
                         yield DataTable(id=tab.table_id, zebra_stripes=True)
-                with TabPane("Usage", id="tab-usage"):
+                with TabPane("Requests", id="tab-usage"):
                     yield Vertical(
-                        Horizontal(
-                            Vertical(
-                                Static("Window / Requests", classes="panel-title"),
-                                Static(id="usage-window"),
-                                Static(id="sum-requests"),
-                                Static(id="sum-missing"),
-                                classes="usage-panel", id="panel-window",
-                            ),
-                            Vertical(
-                                Static("Model tokens", classes="panel-title"),
-                                Static(id="sum-usage-total"),
-                                Static(id="sum-input"),
-                                Static(id="sum-output"),
-                                Static(id="sum-total"),
-                                Static(id="sum-cost"),
-                                classes="usage-panel", id="panel-tokens",
-                            ),
-                            Vertical(
-                                Static("Cache breakdown", classes="panel-title"),
-                                Static(id="sum-cache-hit"),
-                                Static(id="sum-cache-miss"),
-                                Static(id="sum-cache-write"),
-                                Static(id="sum-hit-rate"),
-                                classes="usage-panel", id="panel-cache",
-                            ),
-                            Vertical(
-                                Static("Runtime", classes="panel-title"),
-                                Static(id="usage-status"),
-                                classes="usage-panel", id="panel-runtime",
-                            ),
-                            id="usage-panels", classes="summary-panels",
-                        ),
+                        Static(id="usage-window", classes="usage-window-line"),
+                        Static(id="usage-summary", classes="usage-summary-line"),
                         Static(id="usage-note"),
                         Static(id="colnote-usage", classes="col-note"),
                         DataTable(id="t-usage", zebra_stripes=True),
                         id="usage-box",
                     )
+            # Shown only while searching (`/`). One row, above the status line,
+            # rather than a permanent search box that costs every page a row.
+            yield Input(placeholder="Filter this tab…", id="filter")
             yield Static("", id="status")
             yield Footer()
 
@@ -1769,15 +1944,24 @@ if HAVE_TEXTUAL:
             note = db.migrate(self.db_path)
             self._schema_note = "" if note in ("current", "migrated") else note
             self._usage_ready = True
+            # The Dashboard is a scrollable summary, so it needs a focus target of
+            # its own; without one the date button held focus and Enter opened the
+            # picker while a table row looked selected.
+            self.query_one("#dash-box").can_focus = True
             # Auto sync (incremental, ~30s) + UI refresh (~5s). Both are timers,
             # not subprocesses; the sync runs in a worker thread (see _do_sync).
             self.set_interval(self.config["sync_secs"], self._auto_sync_tick)
             self.set_interval(self.config["refresh_secs"], self._auto_refresh_tick)
             self.refresh_data()
+            self._focus_active()
 
         # --- tab cycling (uses the real TabbedContent.active API) -----------
 
         def _cycle_tab(self, delta: int) -> None:
+            # Tab is an app-priority binding, so without this it switched the
+            # hidden tab while a history screen was open on top of it.
+            if len(self.screen_stack) > 1:
+                return
             tc = self.query_one(TabbedContent)
             try:
                 idx = self.TAB_IDS.index(tc.active)
@@ -1792,6 +1976,155 @@ if HAVE_TEXTUAL:
         def action_previous_tab(self) -> None:
             self._cycle_tab(-1)
 
+        # --- keyboard focus, filter and per-tab sort -------------------------
+
+        FILTERABLE_PANES = frozenset(
+            ["tab-usage"] + [tab.pane for tab in ENTITY_TABS])
+
+        def check_action(self, action: str, parameters) -> bool | None:
+            """Hide a key in the footer where pressing it could only do nothing.
+
+            The footer is the app's whole key surface, and it used to advertise
+            `a: All rows` on the Dashboard and Models — pages where no expansion
+            exists. ``check_action`` is Textual's own hook for that: returning
+            False disables the binding for this frame and removes it from the
+            footer, instead of leaving a dead key next to the live ones.
+            """
+            if action in ("next_tab", "previous_tab", "date_range"):
+                return len(self.screen_stack) <= 1
+            if action in ("toggle_all", "cycle_sort", "focus_filter"):
+                if len(self.screen_stack) > 1:
+                    return False
+                try:
+                    pane = self._active_pane()
+                except Exception:
+                    return True
+                if action == "toggle_all":
+                    tab = ENTITY_BY_PANE.get(pane)
+                    return bool(tab and not tab.always_all)
+                if action == "cycle_sort":
+                    return bool(self._sort_fields_for(pane))
+                return pane in self.FILTERABLE_PANES
+            # `None` would mean "disabled but visible" — every action not named
+            # above must stay enabled, including screen back and refresh.
+            return True
+
+        def _focus_active(self) -> None:
+            """Put focus on the widget the active tab is actually about.
+
+            The first focusable widget on this screen used to be the date button,
+            so every tab switch left focus there: a table row looked selected, but
+            Enter opened the date picker. The table is the subject; the date control
+            has its own `d` shortcut and stays clickable.
+            """
+            if len(self.screen_stack) > 1:
+                return
+            pane = self._active_pane()
+            target_id = "t-usage" if pane == "tab-usage" else None
+            if pane == "tab-dashboard":
+                target_id = "dash-box"
+            elif target_id is None and pane in ENTITY_BY_PANE:
+                target_id = ENTITY_BY_PANE[pane].table_id
+            if target_id is None:
+                return
+            try:
+                self.query_one(f"#{target_id}").focus()
+            except Exception:
+                pass
+
+        def _sync_filter_widget(self) -> None:
+            """Show the active tab's saved filter, or hide the row entirely."""
+            try:
+                inp = self.query_one("#filter", Input)
+            except Exception:
+                return
+            pane = self._active_pane()
+            value = (self._tab_filters.get(pane, "")
+                     if pane in self.FILTERABLE_PANES else "")
+            self._loading_filter = True
+            inp.value = value
+            self._loading_filter = False
+            show = bool(value)
+            inp.display = show
+            self._filter_open = show
+
+        def action_focus_filter(self) -> None:
+            if len(self.screen_stack) > 1:
+                return
+            pane = self._active_pane()
+            if pane not in self.FILTERABLE_PANES:
+                return
+            inp = self.query_one("#filter", Input)
+            self._filter_open = True
+            inp.display = True
+            self._loading_filter = True
+            inp.value = self._tab_filters.get(pane, "")
+            self._loading_filter = False
+            inp.focus()
+            inp.cursor_position = len(inp.value)
+
+        def action_clear_filter(self) -> None:
+            pane = self._active_pane()
+            try:
+                inp = self.query_one("#filter", Input)
+            except Exception:
+                return
+            if not inp.display and not self._tab_filters.get(pane):
+                return
+            self._loading_filter = True
+            inp.value = ""
+            self._loading_filter = False
+            inp.display = False
+            self._filter_open = False
+            self._tab_filters[pane] = ""
+            self._refresh_active_tab()
+            self._focus_active()
+
+        def action_toggle_all(self) -> None:
+            if len(self.screen_stack) > 1:
+                return
+            pane = self._active_pane()
+            tab = ENTITY_BY_PANE.get(pane)
+            if tab is None or tab.always_all:
+                return
+            self._show_all[pane] = not self._show_all.get(pane, False)
+            self._refresh_active_tab()
+            self._focus_active()
+
+        def action_cycle_sort(self) -> None:
+            if len(self.screen_stack) > 1:
+                return
+            pane = self._active_pane()
+            fields = self._sort_fields_for(pane)
+            if not fields:
+                return
+            mode = (self._sort_mode.get(pane, 0) + 1) % (len(fields) + 1)
+            self._sort_mode[pane] = mode
+            self._refresh_active_tab()
+            self._focus_active()
+
+        def action_date_range(self) -> None:
+            if len(self.screen_stack) > 1:
+                return
+            self._open_date_range(self._active_pane())
+
+        def on_input_changed(self, event: Input.Changed) -> None:
+            if event.input.id != "filter" or self._loading_filter:
+                return
+            pane = self._active_pane()
+            if pane not in self.FILTERABLE_PANES:
+                return
+            self._tab_filters[pane] = event.value.strip()
+            self._filter_open = True
+            self._refresh_active_tab()
+
+        def on_input_submitted(self, event: Input.Submitted) -> None:
+            if event.input.id != "filter":
+                return
+            event.input.display = False
+            self._filter_open = False
+            self._focus_active()
+
         # --- data fill / refresh --------------------------------------------
 
 
@@ -1805,26 +2138,132 @@ if HAVE_TEXTUAL:
 
 
 
+        def _active_pane(self) -> str:
+            return self.query_one(TabbedContent).active
+
+        def _sort_fields_for(self, pane):
+            if pane == "tab-usage":
+                return self.USAGE_SORT_FIELDS
+            tab = ENTITY_BY_PANE.get(pane)
+            return tab.sort_fields if tab else ()
+
+        def _sorted_rows(self, rows, fields, mode: int, name_key: str):
+            """Apply one declared sort mode; None-valued rows always sort last."""
+            if not mode or not fields:
+                return list(rows)
+            _label, key, descending = fields[(mode - 1) % len(fields)]
+            key = key or name_key
+            if not key:
+                return list(rows)
+            present = [r for r in rows if r[key] is not None]
+            missing = [r for r in rows if r[key] is None]
+            present.sort(key=lambda r: (str(r[key]).lower()
+                                        if isinstance(r[key], str) else r[key]),
+                         reverse=descending)
+            return present + missing
+
+        def _sort_label(self, pane) -> str:
+            mode = self._sort_mode.get(pane, 0)
+            fields = self._sort_fields_for(pane)
+            if not mode or not fields:
+                return "tab order"
+            return fields[(mode - 1) % len(fields)][0]
+
+        @staticmethod
+        def _matches(cells, query: str) -> bool:
+            if not query:
+                return True
+            return any(query in _plain(cell).lower() for cell in cells)
+
+        def _render_entity_summary(self, tab, found, used, visible, shown):
+            noun = {"tool": "tools", "skill": "skills", "agent": "agents",
+                    "plugin": "plugins", "mcp": "servers", "model": "models"}
+            parts = []
+            query = self._tab_filters.get(tab.pane, "").strip()
+            if query:
+                parts.append(f"{shown:,} match “{query}”")
+            if tab.kind == "model":
+                parts.append(f"{len(used):,} models answered")
+            else:
+                parts.append(f"{len(used):,} {noun.get(tab.kind, 'rows')} used")
+            if tab.kind in ("skill", "mcp", "plugin"):
+                installed = sum(1 for r in found if r["installed"])
+                parts.append(f"{installed:,} installed")
+            if tab.kind == "skill":
+                unused = sum(1 for r in found
+                             if r["installed"] and not (r["calls"] or 0))
+                if unused:
+                    parts.append(f"{unused:,} unused in this window")
+            if not tab.always_all:
+                if self._show_all.get(tab.pane, False):
+                    parts.append(f"a: used only ({len(used):,})")
+                elif len(found) > len(used):
+                    parts.append(f"a: show all {len(found):,}")
+            parts.append(f"sort: {self._sort_label(tab.pane)}")
+            if tab.kind == "plugin":
+                parts.append("uses come from the hook only")
+            label = db.window_label(self._range_of(tab.pane))
+            if label:
+                parts.append(label)
+            text = " · ".join(parts)
+            try:
+                self.query_one(f"#{tab.table_id}-summary", Static).update(text)
+            except Exception:
+                pass
+
         def _fill_entity(self, tab: EntityTab, conn, start=None, end=None) -> None:
             """Fill one registry-declared entity table.
 
             The query is looked up through the module on every call (never bound
             at class-definition time), so a test can monkeypatch ``db.q_tools``
             and this path sees the patched function.
+
+            The list is the tab's *windowed use*, not the whole installed union:
+            an installed-but-unused row is reachable with `a`, and the summary
+            says how many are behind it. Tokens already worked this way, and a
+            40-row Skills catalog of zeroes buried the five skills that ran.
             """
-            found = getattr(db, tab.query)(conn, start_ts=start,
-                                           end_ts=end)
-            # A NULL in a key column is keyed as the empty string: the composite
-            # key must stay one string, and None -> "None" would be a value a
-            # provider could legitimately be named.
+            found = list(getattr(db, tab.query)(conn, start_ts=start,
+                                                end_ts=end))
+            if tab.kind == "model":
+                # Share is a property of the window's total, so it is computed over
+                # the whole result before any filter. Copy to a dict: sqlite3.Row
+                # cannot be extended.
+                total = sum(_usage_total_tokens(
+                    r["prompt_tokens"], r["completion_tokens"],
+                    r["cache_read"], r["cache_write"]) or 0 for r in found)
+                found = [dict(r, share_pct=(
+                    (100.0 * (_usage_total_tokens(
+                        r["prompt_tokens"], r["completion_tokens"],
+                        r["cache_read"], r["cache_write"]) or 0) / total)
+                    if total else None)) for r in found]
+            count_key = tab.count_key
+            used = [r for r in found if (r[count_key] or 0) > 0]
+            show_all = self._show_all.get(tab.pane, tab.always_all)
+            base = self._sorted_rows(
+                found if show_all else used, tab.sort_fields,
+                self._sort_mode.get(tab.pane, 0), tab.name_key)
+            query = self._tab_filters.get(tab.pane, "").strip().lower()
+            items = []
+            for row in base:
+                cells = tab.cells(row, tab.kind)
+                if self._matches(cells, query):
+                    items.append((row, cells))
             key_rows = None
             if tab.key_columns:
-                key_rows = [["" if r[c] is None else r[c]
-                             for c in tab.key_columns] for r in found]
-            rows = [tab.cells(r, tab.kind) for r in found]
-            self._fill_wide(tab.table_id, rows, tab.empty,
-                            key_index=tab.key_index, key_kind=tab.kind,
+                key_rows = [["" if row[c] is None else row[c]
+                             for c in tab.key_columns] for row, _ in items]
+            empty = tab.empty
+            if query:
+                empty = f"No {tab.title.lower()} match “{query}”"
+            elif not show_all and found:
+                empty = (f"No {tab.title.lower()} used in this window — "
+                         f"a: show all {len(found):,}")
+            self._fill_wide(tab.table_id, [cells for _row, cells in items],
+                            empty, key_index=tab.key_index,
+                            key_kind=tab.key_kind or tab.kind,
                             key_rows=key_rows)
+            self._render_entity_summary(tab, found, used, items, len(items))
 
         def _fill_pane(self, pane, conn, start=None, end=None) -> None:
             """Fill the panel behind ``pane`` (the entity tabs; Usage is separate)."""
@@ -1851,7 +2290,7 @@ if HAVE_TEXTUAL:
                     self._report_query_error(exc)
                     return
             try:
-                self._sync_range_widget()      # initial 📅 label + Select value
+                self._sync_range_widget()      # initial range-control label
                 # Each tab is filled with its own window, so one tab's range
                 # never moves another's.
                 self._fill_dashboard(conn, *self._bounds_for("tab-dashboard"))
@@ -1981,19 +2420,13 @@ if HAVE_TEXTUAL:
         def on_tabbed_content_tab_activated(
                 self, event: TabbedContent.TabActivated) -> None:
             # Populate the tab the user just switched to (hidden tabs are not
-            # polled by the 5s timer) and point the range Select at its window.
+            # polled by the 5s timer), point the range control at its window, show
+            # its own filter, and put keyboard focus on the table it just filled.
             if self._usage_ready:
                 self._sync_range_widget()
                 self._refresh_active_tab()
-
-        # --- Usage Statistics page -----------------------------------------
-
-        def _render_usage_status(self) -> None:
-            self.query_one("#usage-status", Static).update(
-                f"Auto sync: {'ON' if self._auto_sync else 'OFF'}\n"
-                f"Last sync: {local_time(self._last_sync)}\n"
-                f"Last refresh: {local_time(self._last_refresh)}"
-            )
+                self._sync_filter_widget()
+                self._focus_active()
 
         @staticmethod
         def _panel_line(label: str, value: str) -> str:
@@ -2005,11 +2438,11 @@ if HAVE_TEXTUAL:
         # Below this width the panels stack instead of sitting side by side:
         # each column needs ~28 cells for a 24-char panel line plus
         # border/padding, so 4 x 28 = 112.
-        COMPACT_WIDTH = 112
+        COMPACT_WIDTH = 150
         # A panel line is 24 columns of content plus 2 border and 2 padding, so a
         # two-up cell needs 28. Measured: the panels region is 2 cells narrower
         # than the terminal, so two columns stop fitting below 60.
-        STACKED_WIDTH = 60
+        STACKED_WIDTH = 90
 
         # Every table on this screen: id -> (its columns in display order, the note
         # that names what the plan dropped, the cells it loses to its surroundings).
@@ -2023,19 +2456,18 @@ if HAVE_TEXTUAL:
         }
 
         def _apply_responsive_layout(self, width=None) -> None:
-            # Panels side by side on wide terminals; two-up when narrow; stacked
-            # below that, where a second column would wrap a value mid-line. Every
-            # summary page (Dashboard + Usage) uses .summary-panels. Only
-            # .summary-panels has a rule for `stacked`; dash rows never two-up.
+            # Three columns, then two, then one. The breakpoint is the length of
+            # a leaderboard line, not a round terminal width: at 160 columns three
+            # 48-cell panels wrapped every `req` onto a second line.
             if width is None:
                 width = self.size.width
             try:
                 compact = width < self.COMPACT_WIDTH
                 stacked = width < self.STACKED_WIDTH
-                for selector in (".summary-panels", ".dash-row"):
-                    for el in self.query(selector):
-                        el.set_class(compact, "compact")
-                        el.set_class(stacked, "stacked")
+                for el in self.query(".dash-row"):
+                    el.set_class(compact, "compact")
+                    el.set_class(stacked, "stacked")
+                    el.set_class(compact and not stacked, "two-col")
             except Exception:
                 pass
 
@@ -2068,31 +2500,30 @@ if HAVE_TEXTUAL:
             return db.window_bounds(rng, now)
 
         def _sync_range_widget(self) -> None:
-            """Point the shared range Select at the active tab's own window.
+            """Point both range controls at the active tab's own window.
 
-            Every tab keeps its own range (``self.tab_range``), so switching tabs
-            shows that tab's range, not the one you last picked elsewhere. Setting
-            ``Select.value`` posts a ``Changed`` message, which
-            ``on_select_changed`` ignores when it already matches the active
-            tab's range (so this never re-triggers a refresh loop).
+            The Select shows the preset (or "Custom…"), and the button shows the
+            custom span or offers the picker. Setting ``Select.value`` posts a
+            ``Changed`` message; ``on_select_changed`` ignores it when it already
+            matches the active tab's range, so the sync never loops.
             """
+            pane = self.query_one(TabbedContent).active
+            value = self._range_of(pane)
             try:
                 sel = self.query_one("#range", Select)
             except Exception:
-                return
-            pane = self.query_one(TabbedContent).active
-            sel.display = True
-            value = self._range_of(pane)
-            # A custom window is shown as "Custom…" in the Select, with the span
-            # itself on the 📅 control next to it.
-            target = CUSTOM_RANGE if isinstance(value, db.CustomWindow) else value
-            if target is not None and sel.value != target:
-                sel.value = target
-            self._set_date_label(db.window_label(value))
+                sel = None
+            if sel is not None:
+                target = CUSTOM_RANGE if isinstance(value, db.CustomWindow) else value
+                if target is not None and sel.value != target:
+                    sel.value = target
+            self._set_date_label(value)
 
-        def _set_date_label(self, text: str) -> None:
+        def _set_date_label(self, value) -> None:
+            custom = isinstance(value, db.CustomWindow)
             try:
-                self.query_one("#topbar", TopBar).set_range_label(text)
+                self.query_one("#topbar", TopBar).set_range_label(
+                    db.window_label(value) if custom else "", custom=custom)
             except Exception:
                 pass
 
@@ -2120,7 +2551,8 @@ if HAVE_TEXTUAL:
                         start / 1000).strftime("%Y-%m-%d")
                     span = (start_date if start_date == end_date
                             else f"{start_date} — {end_date}")
-            self.query_one("#usage-window", Static).update(f"{label}\n{span}")
+            self.query_one("#usage-window", Static).update(
+                f"[b]{label}[/b] · {span} · {self.USAGE_LOG_LIMIT} newest per page")
 
         def _refresh_usage(self, conn=None) -> None:
             # Recompute the window from the CURRENT time on every refresh — never
@@ -2131,23 +2563,21 @@ if HAVE_TEXTUAL:
             start, end = self._bounds_for("tab-usage")
             self._last_refresh = now_ms
             self._render_usage_window()
-            self._render_usage_status()
             own = conn is None
             if own:
                 try:
                     conn = db.open_db(self.db_path, readonly=True)
                 except sqlite3.Error as e:
-                    self.query_one("#usage-status", Static).update(
+                    self.query_one("#usage-summary", Static).update(
                         f"usage unavailable: {e}")
                     self._report_query_error(e)
                     return
             try:
                 s = db.q_usage_summary(conn, start, end)
-                self._render_summary_panels(s)
-                self._fill_usage_logs(conn, start, end, s["requests"])
+                self._fill_usage_logs(conn, start, end, s)
             except sqlite3.Error as e:
                 # e.g. an un-migrated DB where the newer columns are missing.
-                self.query_one("#usage-status", Static).update(
+                self.query_one("#usage-summary", Static).update(
                     f"usage query failed ({e}); run: ocut sync")
                 # The page note is local; the bar is what a user reads from
                 # another tab, so the failure has to reach both.
@@ -2157,46 +2587,36 @@ if HAVE_TEXTUAL:
                     conn.close()
             self._apply_responsive_layout()
 
-        def _render_summary_panels(self, s: dict) -> None:
-            def put(wid: str, label: str, val: str) -> None:
-                self.query_one(wid, Static).update(self._panel_line(label, val))
+        def _render_usage_summary(self, s: dict):
+            """The compact replacement for four bordered panels.
 
+            Tokens and money stay here; the cache breakdown moved to the note a
+            line below, because both together wrapped a 160-column terminal onto a
+            second line — and the note already exists to describe the page. Sync
+            state belongs to the status bar, not repeated on every page.
+            """
             req = s["requests"] or 0
-            put("#sum-requests", "Requests", f"{req:,}")
-            # Usage Total = Input + Output + cache hit (CodeBuddy's display-only
-            # re-add); API Total beside it stays the host's own step total.
-            put("#sum-usage-total", "Usage Total",
-                fmt_n(_usage_total_tokens(s["prompt_tokens"],
-                                          s["completion_tokens"],
-                                          s["cache_read"], s["cache_write"])))
-            put("#sum-input", "Input",
-                fmt_n(_input_tokens(s["prompt_tokens"], s["cache_read"],
-                                    s["cache_write"])))
-            put("#sum-output", "Output", fmt_n(s["completion_tokens"]))
-            put("#sum-total", "API Total", fmt_n(s["total_tokens"]))
-            put("#sum-cost", "Cost", fmt_cost(s["cost"]))
-            put("#sum-cache-hit", "Cache hit", fmt_n(s["cache_read"]))
-            put("#sum-cache-miss", "Cache miss", fmt_n(s["prompt_tokens"]))
-            put("#sum-cache-write", "Cache write", fmt_n(s["cache_write"]))
-            # hit / (hit + miss + write) — the cacheable input.
-            frac = db.cache_hit_rate(s["cache_read"], s["prompt_tokens"],
-                                     s["cache_write"])
-            put("#sum-hit-rate", "Hit rate",
-                "-" if frac is None else f"{frac * 100:.1f}%")
+            usage_total = _usage_total_tokens(
+                s["prompt_tokens"], s["completion_tokens"],
+                s["cache_read"], s["cache_write"])
+            inp = _input_tokens(s["prompt_tokens"], s["cache_read"],
+                                s["cache_write"])
+            parts = [
+                f"Requests {req:,}",
+                f"Usage Total {fmt_compact_n(usage_total)}",
+                f"Input {fmt_compact_n(inp)}",
+                f"Output {fmt_compact_n(s['completion_tokens'])}",
+                f"API Total {fmt_compact_n(s['total_tokens'])}",
+                f"Cost {fmt_cost(s['cost'])}",
+            ]
             missing = []
             if s["missing_prompt"]:
                 missing.append(f"{s['missing_prompt']:,} missing input")
             if s["missing_completion"]:
                 missing.append(f"{s['missing_completion']:,} missing output")
-            if req == 0:
-                note = "no data in window"
-            elif missing:
-                note = ", ".join(missing)
-            else:
-                note = "complete"
-            # The panel reports completeness either way; naming it "Incomplete"
-            # made the good case read "Incomplete: complete".
-            put("#sum-missing", "Completeness", note)
+            if missing:
+                parts.append("incomplete: " + ", ".join(missing))
+            self.query_one("#usage-summary", Static).update(" · ".join(parts))
 
         # --- Dashboard page ------------------------------------------------
 
@@ -2214,11 +2634,17 @@ if HAVE_TEXTUAL:
                 models = db.q_usage_model_stats(conn, start, end)
                 tools = db.q_tools(conn, limit=self.DASH_TOP,
                                    start_ts=start, end_ts=end)
-                daily = db.q_usage_daily(conn, start, end)
                 modes = db.q_mode_stats(conn, start, end, by="agent",
                                         limit=self.DASH_TOP)
                 share = db.q_subagent_share(conn, start, end)
-                cost_daily = db.q_usage_cost_daily(conn, start, end)
+                hourly = (start is not None
+                          and (end - start) <= 36 * 60 * 60 * 1000)
+                if hourly:
+                    calls_series = db.q_usage_hourly(conn, start, end)
+                    cost_series = db.q_usage_cost_hourly(conn, start, end)
+                else:
+                    calls_series = db.q_usage_daily(conn, start, end)
+                    cost_series = db.q_usage_cost_daily(conn, start, end)
             except sqlite3.Error as e:
                 # e.g. an un-migrated DB where the newer columns are missing.
                 self.query_one("#dash-note", Static).update(
@@ -2232,7 +2658,8 @@ if HAVE_TEXTUAL:
             self._render_dashboard_models(models)
             self._render_dashboard_tools(tools)
             self._render_dashboard_modes(modes)
-            self._render_dashboard_activity(daily, cost_daily, start, end)
+            self._render_dashboard_activity(calls_series, cost_series, start, end,
+                                            hourly=hourly)
             if not any(kpi.values()) and not (s["requests"] or 0):
                 self.query_one("#dash-note", Static).update(
                     "No data in this window — widen the range above.")
@@ -2255,16 +2682,17 @@ if HAVE_TEXTUAL:
         def _render_dashboard_tokens(self, s: dict) -> None:
             self._put_panel("#dash-tok-requests", "Requests", f"{s['requests'] or 0:,}")
             self._put_panel("#dash-tok-input", "Input",
-                            fmt_n(_input_tokens(s["prompt_tokens"],
-                                                s["cache_read"],
-                                                s["cache_write"])))
-            self._put_panel("#dash-tok-output", "Output", fmt_n(s["completion_tokens"]))
-            self._put_panel("#dash-tok-api", "API Total", fmt_n(s["total_tokens"]))
+                            fmt_compact_n(_input_tokens(
+                                s["prompt_tokens"], s["cache_read"],
+                                s["cache_write"])))
+            self._put_panel("#dash-tok-output", "Output",
+                            fmt_compact_n(s["completion_tokens"]))
+            self._put_panel("#dash-tok-api", "API Total",
+                            fmt_compact_n(s["total_tokens"]))
             self._put_panel("#dash-tok-usage", "Usage Total",
-                            fmt_n(_usage_total_tokens(s["prompt_tokens"],
-                                                      s["completion_tokens"],
-                                                      s["cache_read"],
-                                                      s["cache_write"])))
+                            fmt_compact_n(_usage_total_tokens(
+                                s["prompt_tokens"], s["completion_tokens"],
+                                s["cache_read"], s["cache_write"])))
             self._put_panel("#dash-tok-hit-rate", "Hit rate",
                             self._hit_rate(s["cache_read"], s["prompt_tokens"],
                                            s["cache_write"]))
@@ -2273,9 +2701,12 @@ if HAVE_TEXTUAL:
             self._put_panel("#dash-tok-cost", "Cost", fmt_cost(s["cost"]))
 
         def _render_dashboard_cache(self, s: dict) -> None:
-            self._put_panel("#dash-cache-hit", "Cache hit", fmt_n(s["cache_read"]))
-            self._put_panel("#dash-cache-miss", "Cache miss", fmt_n(s["prompt_tokens"]))
-            self._put_panel("#dash-cache-write", "Cache write", fmt_n(s["cache_write"]))
+            self._put_panel("#dash-cache-hit", "Cache hit",
+                            fmt_compact_n(s["cache_read"]))
+            self._put_panel("#dash-cache-miss", "Cache miss",
+                            fmt_compact_n(s["prompt_tokens"]))
+            self._put_panel("#dash-cache-write", "Cache write",
+                            fmt_compact_n(s["cache_write"]))
 
         def _render_dashboard_runtime(self, a: dict, share: dict) -> None:
             # counts are COUNT-based -> a real 0; avg_ms is NULL when nothing ran.
@@ -2291,7 +2722,8 @@ if HAVE_TEXTUAL:
             # working day they are the majority — one "sessions" count hides
             # that, so the split is its own line.
             self._put_panel("#dash-rt-subagents", "Subagents",
-                            f"{share['subagents'] or 0:,}/{share['sessions'] or 0:,}")
+                            f"{share['subagents'] or 0:,} of "
+                            f"{share['sessions'] or 0:,}")
             self._put_panel("#dash-rt-projects", "Projects", f"{a['projects'] or 0:,}")
 
         def _render_dashboard_modes(self, rows) -> None:
@@ -2306,7 +2738,7 @@ if HAVE_TEXTUAL:
                 self.query_one("#dash-modes", Static).update("nothing in this window")
                 return
             lines = [f"{i}. {clip(r['mode'], 22):<22}"
-                     f"{fmt_n(r['total_tokens']):>12}"
+                     f"{fmt_compact_n(r['total_tokens']):>8}"
                      f"  {fmt_cost(r['cost'])}"
                      for i, r in enumerate(top, 1)]
             self.query_one("#dash-modes", Static).update("\n".join(lines))
@@ -2316,8 +2748,9 @@ if HAVE_TEXTUAL:
             if not top:
                 self.query_one("#dash-models", Static).update("nothing in this window")
                 return
-            lines = [f"{i}. {clip(r['model'], 26):<26}{fmt_n(r['total_tokens']):>12}"
-                     f"  {r['requests']:>5} req"
+            lines = [f"{i}. {clip(r['model'], 22):<22}"
+                     f"{fmt_compact_n(r['total_tokens']):>8}"
+                     f" {r['requests']:>5} req"
                      for i, r in enumerate(top, 1)]
             self.query_one("#dash-models", Static).update("\n".join(lines))
 
@@ -2328,8 +2761,7 @@ if HAVE_TEXTUAL:
                 self.query_one("#dash-tools", Static).update("nothing in this window")
                 return
             lines = [f"{i}. {clip(r['tool_name'], 22):<22}"
-                     f"{count_n(r['calls'], 'call'):>12}"
-                     f" · {ms(r['avg_ms'])}"
+                     f"{r['calls']:>7,} · {ms(r['avg_ms'])}"
                      for i, r in enumerate(top, 1)]
             self.query_one("#dash-tools", Static).update("\n".join(lines))
 
@@ -2350,50 +2782,94 @@ if HAVE_TEXTUAL:
                 out.append(self._SPARK[level])
             return "".join(out)
 
-        def _render_dashboard_activity(self, daily, cost_daily, start, end) -> None:
-            """Two sparklines of the same local days: tool calls, then step cost.
+        def _render_dashboard_activity(self, calls_rows, cost_rows, start, end,
+                                       hourly=False) -> None:
+            """Two sparklines over one shared time axis — hours or local days.
 
-            ``daily``/``cost_daily`` only carry days that had data, so the gaps
-            are filled from the window bounds. For the all-time range the series
-            starts at the first day with data (never from the epoch). One shared
-            day axis, two series: the cost bars answer "when did it burn", which
-            call counts cannot — a cheap-call day and an expensive one read
-            identically there.
+            The bucket count is bounded by the panel's own width. A Today window
+            used to draw a single mark labelled "peak 13,090/day"; an all-time
+            window drew more marks than the panel had cells and wrapped. Hours are
+            the useful granularity inside a day, and longer ranges are grouped into
+            equal buckets so the shape still fits. The cost series answers "when
+            did it burn", which a call count cannot.
             """
-            counts = {r["day"]: r["calls"] for r in daily}
             now = self._now_ms() if end is None else end
-            end_day = datetime.fromtimestamp(now / 1000).date()
-            if start is not None:
-                start_day = datetime.fromtimestamp(start / 1000).date()
-            elif daily:
-                start_day = datetime.strptime(daily[0]["day"], "%Y-%m-%d").date()
+            end_dt = datetime.fromtimestamp(now / 1000)
+            if hourly:
+                start_dt = (datetime.fromtimestamp(start / 1000)
+                            if start is not None
+                            else end_dt - timedelta(hours=23))
+                start_dt = start_dt.replace(minute=0, second=0, microsecond=0)
+                end_dt = end_dt.replace(minute=0, second=0, microsecond=0)
+                keys, d = [], start_dt
+                while d <= end_dt:
+                    keys.append(d.strftime("%Y-%m-%d %H:00"))
+                    d += timedelta(hours=1)
+                counts = {r["hour"]: r["calls"] for r in calls_rows}
+                costs = {r["hour"]: r["cost"] for r in cost_rows}
+                base_unit = "hour"
             else:
-                start_day = end_day
-            days, d = [], start_day
-            while d <= end_day:
-                days.append(d)
-                d += timedelta(days=1)
-            series = [counts.get(day.isoformat(), 0) for day in days]
+                end_day = end_dt.date()
+                if start is not None:
+                    start_day = datetime.fromtimestamp(start / 1000).date()
+                elif calls_rows:
+                    start_day = datetime.strptime(calls_rows[0]["day"], "%Y-%m-%d").date()
+                else:
+                    start_day = end_day
+                days, d = [], start_day
+                while d <= end_day:
+                    days.append(d)
+                    d += timedelta(days=1)
+                keys = [day.isoformat() for day in days]
+                counts = {r["day"]: r["calls"] for r in calls_rows}
+                costs = {r["day"]: r["cost"] for r in cost_rows}
+                base_unit = "day"
+
+            try:
+                cap = max(12, self.query_one("#dash-activity").size.width or 44)
+            except Exception:
+                cap = 44
+            bucket = (len(keys) + cap - 1) // cap if keys else 1
+            if bucket > 1:
+                groups = [keys[i:i + bucket] for i in range(0, len(keys), bucket)]
+                labels = [g[0] for g in groups]
+                series = [sum(counts.get(k, 0) for k in g) for g in groups]
+                cost_series = [sum(costs.get(k) or 0 for k in g) for g in groups]
+                unit = f"{bucket}{base_unit[0]}"      # 2d / 3h
+            else:
+                labels = keys
+                series = [counts.get(k, 0) for k in keys]
+                cost_series = [costs.get(k) or 0 for k in keys]
+                unit = base_unit
+
+            def edge(key: str) -> str:
+                if hourly:
+                    return (key[5:] if keys and keys[0][:10] != keys[-1][:10]
+                            else key[11:])
+                return key[5:]
+
+            title = f"Calls / cost per {unit}"
+            try:
+                self.query_one("#dash-activity-title", Static).update(title)
+            except Exception:
+                pass
             self.query_one("#dash-activity", Static).update(self._sparkline(series))
-            # The day list is never empty (a window always contains at least
-            # today), so the branch that matters is "no calls in it", not
-            # "no days" — the old `if series:` test was always true.
+            axis = f"{edge(labels[0])} → {edge(labels[-1])}" if labels else ""
             if any(series):
-                self.query_one("#dash-activity-axis", Static).update(
-                    f"{days[0]:%m-%d} → {days[-1]:%m-%d} · peak {max(series):,}/day")
+                peak = max(series)
+                suffix = f" · peak {peak:,}/{unit}"
             else:
-                self.query_one("#dash-activity-axis", Static).update(
-                    f"{days[0]:%m-%d} → {days[-1]:%m-%d} · no activity")
-            costs = {r["day"]: r["cost"] for r in cost_daily}
-            cost_series = [costs.get(day.isoformat()) or 0 for day in days]
+                suffix = " · no activity"
+            self.query_one("#dash-activity-axis", Static).update(axis + suffix)
             self.query_one("#dash-cost", Static).update(
                 self._sparkline(cost_series))
             peak = max(cost_series) if cost_series else 0
             if peak > 0:
                 self.query_one("#dash-cost-axis", Static).update(
-                    f"peak ${peak:.2f}/day")
+                    f"peak ${peak:.2f}/{unit}")
             else:
-                self.query_one("#dash-cost-axis", Static).update("no cost in this window")
+                self.query_one("#dash-cost-axis", Static).update(
+                    "no cost in this window")
 
         @staticmethod
         def _hit_rate(hit, miss, write) -> str:
@@ -2401,30 +2877,50 @@ if HAVE_TEXTUAL:
             frac = db.cache_hit_rate(hit, miss, write)
             return "-" if frac is None else f"{frac * 100:.1f}%"
 
-        def _fill_usage_logs(self, conn, start, end, total=None) -> None:
+        USAGE_SORT_FIELDS = (("time", "ts", True), ("cost", "cost", True),
+                             ("tokens", "total_tokens", True),
+                             ("model", "model", False))
+
+        def _fill_usage_logs(self, conn, start, end, s=None) -> None:
             """Fill the request log, and say so when the list is cut short.
 
-            ``total`` is the window's step count, which ``q_usage_summary`` has
-            already counted. The table holds ``USAGE_LOG_LIMIT`` rows, and a
-            silently shortened list is the row-level version of the half column
-            the wide plan refuses to render.
-
-            The note used to say "no cost/duration/status" — copied from CodeBuddy,
-            where there is no cost source. OpenCode records a price per step, so
-            that sentence was denying a column the page now shows.
+            ``s`` is the window summary; its request count is what the "showing X
+            of Y" note compares against. The filter is SQL-side, so a match on an
+            older page is still found. The note used to deny cost and duration
+            because CodeBuddy has no source for them; OpenCode prices each step.
             """
-            rows = db.q_usage_request_logs(conn, start, end,
-                                           limit=self.USAGE_LOG_LIMIT)
+            query = self._tab_filters.get("tab-usage", "").strip()
+            mode = self._sort_mode.get("tab-usage", 0)
+            fields = self.USAGE_SORT_FIELDS
+            label = fields[(mode - 1) % len(fields)][0] if mode else "time"
+            rows = db.q_usage_request_logs(
+                conn, start, end, limit=self.USAGE_LOG_LIMIT,
+                text=query or None, order_by=label)
+            total = (s["requests"] or 0) if s else None
             note = ""
             if rows:
-                note = ("Newest first · cache hit=read, write=create · "
-                        "no duration/status")
-                if total is not None and total > len(rows):
-                    note += f" · showing {len(rows):,} of {total:,}"
+                parts = []
+                if s:
+                    frac = db.cache_hit_rate(s["cache_read"], s["prompt_tokens"],
+                                             s["cache_write"])
+                    hit = "-" if frac is None else f"{frac * 100:.1f}%"
+                    parts += [
+                        f"Cache hit {fmt_compact_n(s['cache_read'])}",
+                        f"Cache miss {fmt_compact_n(s['prompt_tokens'])}",
+                        f"Cache write {fmt_compact_n(s['cache_write'])}",
+                        f"Hit rate {hit}",
+                    ]
+                parts.append(f"sort: {label}")
+                if query:
+                    parts.append(f"filter “{query}” · {len(rows):,} matches")
+                elif total is not None and total > len(rows):
+                    parts.append(f"showing {len(rows):,} of {total:,}")
+                note = " · ".join(parts)
+            elif query:
+                note = f"No requests match “{query}” in this window"
             self.query_one("#usage-note", Static).update(note)
             out = [[
-                local_time(r["ts"]), r["model"] or "-",
-                db.provider_label(r["provider"]),
+                ts_secs(r["ts"]), r["model"] or "-",
                 fmt_n(_usage_total_tokens(r["prompt_tokens"],
                                           r["completion_tokens"],
                                           r["cache_read"], r["cache_write"])),
@@ -2432,18 +2928,30 @@ if HAVE_TEXTUAL:
                                     r["cache_write"])),
                 fmt_n(r["completion_tokens"]),
                 fmt_n(r["total_tokens"]), fmt_cost(r["cost"]),
+                self._hit_rate(r["cache_read"], r["prompt_tokens"],
+                               r["cache_write"]),
+                # The host's project id is 40 opaque characters; a prefix is all
+                # that fits beside the numbers, and the detail keeps it whole.
+                clip(r["project"] or "-", 18),
+                r["agent"] or "-",
+                db.provider_label(r["provider"]),
                 fmt_n(r["cache_read"]),
                 fmt_n(r["prompt_tokens"]),
                 fmt_n(r["cache_write"]),
-                self._hit_rate(r["cache_read"], r["prompt_tokens"],
-                               r["cache_write"]),
             ] for r in rows]
             # The shared empty state, like the other seven tables: a note above an
             # untouched table reads as a page that failed to load.
-            self._fill_wide("t-usage", out,
-                            "No requests in this window — widen the range above.")
+            self._fill_wide(
+                "t-usage", out,
+                (f"No requests match “{query}”" if query
+                 else "No requests in this window — widen the range above."),
+                key_index=(0, 1), key_kind="call",
+                key_rows=[["model", r["call_id"]] for r in rows])
+            if s is not None:
+                self._render_usage_summary(s)
 
         def on_select_changed(self, event: Select.Changed) -> None:
+            """The fixed presets: one selection, one range, no calendar."""
             if event.select.id != "range":
                 return
             pane = self.query_one(TabbedContent).active
@@ -2456,10 +2964,11 @@ if HAVE_TEXTUAL:
             if event.value == self._range_of(pane):
                 return                    # programmatic sync, not a user change
             self.tab_range[pane] = event.value
-            self._sync_range_widget()     # refresh the 📅 label
+            self._sync_range_widget()
             if pane == "tab-usage":
-                self._render_usage_window()   # keep the Usage Window panel live
-            self._refresh_active_tab()    # re-query only the visible tab
+                self._render_usage_window()
+            self._refresh_active_tab()
+            self._focus_active()
 
         def _open_date_range(self, pane) -> None:
             """Open the date picker for a pane and apply the picked window to it."""
@@ -2467,13 +2976,17 @@ if HAVE_TEXTUAL:
 
             def done(result) -> None:
                 if result is None:
-                    self._sync_range_widget()   # cancel: revert the Select
+                    # Cancel leaves Select on "Custom…"; put it back on the
+                    # range the tab actually still has.
+                    self._sync_range_widget()
+                    self._focus_active()
                     return
                 self.tab_range[pane] = result
                 self._sync_range_widget()
                 if pane == "tab-usage":
                     self._render_usage_window()
                 self._refresh_active_tab()
+                self._focus_active()
 
             self.push_screen(modal, done)
 
@@ -2520,10 +3033,17 @@ if HAVE_TEXTUAL:
                 model, _, provider = rest.partition("\t")
                 self.push_screen(ModelResponsesScreen(
                     model, start, end, label, provider=provider))
-            elif kind == "mcp":
-                # Key is mcp\t<server>\t<tool>. Both halves travel: the row was keyed
-                # on the pair, the table column searched is the tool, and two servers
-                # can expose one tool name — so the server is a condition, not a title.
+            elif kind == "mcp_server":
+                # A server row opens its tools; the tool row below opens history.
+                self.push_screen(McpServerScreen(
+                    rest, start_ts=start, end_ts=end, window_label=label))
+            elif kind in ("mcp", "mcp_tool"):
+                # Both keys carry <server>\t<tool>: the row was keyed on the pair,
+                # the table column searched is the tool, and two servers can expose
+                # one tool name — so the server is a condition, not a title. `mcp`
+                # comes from the MCP tab's tool rows; `mcp_tool` from the server
+                # screen pushed on top of it, which routes through this same handler
+                # so a double activation cannot push two histories.
                 server, _, tool = rest.partition("\t")
                 self.push_screen(HistoryScreen(
                     "mcp", tool, display=f"{server} · {tool}",
@@ -2549,8 +3069,8 @@ if HAVE_TEXTUAL:
             # refresh happened to put them back.
             self._set_status(self._status_line())
             self.notify(f"Auto sync: {'ON' if self._auto_sync else 'OFF'}")
-            if self._usage_ready:
-                self._render_usage_status()
+            if self._usage_ready and self._active_pane() == "tab-usage":
+                self._refresh_active_tab()
 
         # --- automatic sync / refresh timers --------------------------------
 

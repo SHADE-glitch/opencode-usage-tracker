@@ -328,9 +328,12 @@ def test_readmes_document_every_key_the_screen_binds():
             rows.append(line)
         table = " ".join(rows).lower()
         for key in keys:
-            assert f"`{key.lower()}`" in table, (
-                f"{name}'s key table does not document `{key}` "
-                f"(bound in TrackerApp.BINDINGS)")
+            # Textual names the physical key `/` as `slash`; the README shows the
+            # key a person presses, not the binding's internal spelling.
+            shown = "/" if key == "slash" else key
+            assert f"`{shown.lower()}`" in table, (
+                f"{name}'s key table does not document `{shown}` "
+                f"(bound as {key!r} in TrackerApp.BINDINGS)")
 
 
 def test_readme_does_not_claim_message_text_is_stored():
