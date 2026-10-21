@@ -1744,3 +1744,32 @@ Cost     An offered-but-unused model no longer appears on Tokens (the previous r
          "real model" field — so for a third-party provider the configured id is the only name
          the host exposes, and this reader cannot substitute the model that answered.
 Commit   65e4591
+
+### D-084 · 2026-10-21 · fix
+
+Symptom  Four readings disagreed with what the host records. v2's `subagent` tool names its target in
+         `input.agent`, but the reader read only v1's `subagent_type` — 258 of 391 task calls on this host
+         never reached `agent_usage`, and `general` was under-counted. The Plugins panel listed 3 of its 4
+         rows as plugins that were not plugins: an MCP tool's `owner_plugin` is its server and a model's is
+         its provider, so `basic-memory`, `context7` and `huoshan` read as `removed` plugins. The dashboard
+         summed `error` + `running` into one "Incomplete" panel (492) while the Tools tab's `fail` said
+         485 — one panel answering two questions. And the Usage note said "no cost" while OpenCode records
+         a price per step, and the request log was cut at 100 rows without saying so.
+Change   The agent branch reads `input.agent` first, `subagent_type` second; `NO_TASK_TYPE` (a task call
+         that names no agent — the host allows one) joins `HELD_GAVE_UP` as a known reason, so a bare task
+         call is counted in `tool_calls` without raising the `!`. The plugin names CTE takes owners only
+         from `kind IN ('tool','command','skill','agent')` and excludes `source='mcp'`. The dashboard shows
+         `Failed` and `Running` as two panels; Usage, Responses and Tokens gain a `Cost` column
+         (`$0.0000` for a recorded zero, `-` for absent — OpenCode's cheapest step here is $0.0076, so two
+         decimals hid it); the request log's note reports `· showing N of M` when the window exceeds the
+         limit and no longer denies the cost column. Tools keeps cbut's shape but swaps cbut's `pend` for
+         `run` — OpenCode has no pending layer; a call is `running` or it is finished.
+Evidence L0 2026-10-21: `.venv/bin/python -m pytest scripts/tests -q` — 360 passed, 3 subtests passed;
+         each new case fails when its half is undone (v2 `agent` key attribution, the unnamed task call
+         not raising the alarm, MCP/provider owners, the `run` column, the two dashboard panels, the
+         truncated-log note). L1 the same day against this machine's own database: `ocut plugins` lists
+         1 row instead of 4, and the Agents panel recovers the 258 calls the v2 key lost.
+Cost     The dashboard's `Incomplete` panel is gone by design — anyone who read it as one number now
+         reads two. `Cost` formats to four decimals; a model priced below $0.00005 still rounds to $0.0000
+         rather than switching to scientific notation.
+Commit   a9e92b3
