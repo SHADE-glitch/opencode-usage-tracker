@@ -16,6 +16,13 @@ This repository is public.
 
 ## What this is
 
+`ocut` is modeled on the sibling CodeBuddy tracker (`codebuddy-usage-tracker`, `cbut`): the
+three-layer shape below, the guard suite, the bilingual docs and the `D-###` changelog all
+come from there. The **fields do not** — they are re-derived from what OpenCode records,
+never copied for symmetry. When a cbut concept has no OpenCode counterpart, drop it (`pend`
+became `run`; OpenCode has no pending-result layer); when OpenCode records something cbut
+cannot, show it (the per-step `cost` on Usage/Responses/Tokens). A change that makes ocut
+less like cbut is only wrong if it makes ocut less like OpenCode.
 `ocut` — a **passive reader** of OpenCode's own SQLite database plus one optional plugin
 hook, and the CLI/TUI that report over the result. Three layers, in dependency order:
 

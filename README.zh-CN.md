@@ -26,6 +26,12 @@ MCP 工具、每一步模型的 token、以及每个会话——谁被调用、�
 可选的插件 hook 只补上宿主无法暴露的那一项——一次工具调用属于哪个插件。所有数据都在本地：
 不联网、不上传、不记录消息正文。
 
+**以谁为范本** —— `ocut` 模仿姊妹项目 [codebuddy-usage-tracker](https://github.com/SHADE-glitch/codebuddy-usage-tracker)
+（`cbut`）：三层结构、守卫测试套件、双语文档与 changelog 标准都来自那里。但它**刻意不是移植**——
+每一列、每个面板、每个标签都从 OpenCode 实际记录的字段重新推导，所以两者结构一致、在宿主不同处
+各自不同：token 页有 `Cost` 列（OpenCode 每步都记价格，CodeBuddy 没有成本来源），Tools 页用
+`run` 而非 cbut 的 `pend`，Dashboard 把 `Failed` 与 `Running` 分成两块而不是一块。
+
 ---
 
 ## 🤔 为什么
@@ -468,9 +474,12 @@ ocut vacuum            # 压缩文件，并报告回收回来多少
   用量只有那个可选的 hook 会写（M3），所以「装了、hook 什么也没记到」的插件，与「装了、从没被碰过」的
   插件拿到的是同一个标签。这个标签刻意只讲 inventory 行，不讲用量：这一列里没有任何一个字在说
   「它跑过」。
-- **M17** TUI 的**页级**列、面板与标签已对齐姊妹项目 CodeBuddy，但两张**下钻详情屏**和状态行仍用 ocut
-  自己的字段：OpenCode 没有插件 `target`/`marketplace`，也没有独立于 `cache_read` 的 cache hit/miss，
-  所以插件历史与模型响应表**无法逐字**列对列一致——除非凭空造字段。
+- **M17** TUI 的**结构**——八个页、各自的面板与窗口——刻意对齐姊妹项目 CodeBuddy：两个追踪器共用一套
+  心智模型。但**字段是 ocut 自己的**，从 OpenCode 实际记录的内容重新推导，不为对称而照搬，所以页级
+  在宿主不同处已经分岔：Usage/Responses/Tokens 带 `Cost` 列（OpenCode 的每步价格让它成真），Tools 用
+  `run` 而非 cbut 的 `pend`，Dashboard 把 `Failed` 与 `Running` 分开报告。两张**下钻详情屏**和状态行
+  同样用 ocut 自己的字段：OpenCode 没有插件 `target`/`marketplace`，也没有独立于 `cache_read` 的
+  cache hit/miss，所以插件历史与模型响应表**无法逐字**列对列一致——除非凭空造字段。
 
 ---
 

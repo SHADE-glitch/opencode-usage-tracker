@@ -27,6 +27,14 @@ directories. One optional plugin hook fills the one gap the host cannot expose �
 plugin a tool call belonged to. Everything stays local: no network, no upload, no
 message text.
 
+**Its model** — `ocut` is modeled on the sibling [codebuddy-usage-tracker](https://github.com/SHADE-glitch/codebuddy-usage-tracker)
+(`cbut`): the three-layer shape, the guard suite, the bilingual docs and the changelog
+standard all come from there. It is deliberately **not a port** — every column, panel and
+label is re-derived from what OpenCode actually records, so the two agree in structure and
+diverge wherever the hosts do: the token pages carry a `Cost` column (OpenCode prices each
+step; CodeBuddy publishes no cost), Tools shows `run` where cbut shows `pend`, and the
+dashboard reports `Failed` and `Running` as two panels, not one.
+
 ---
 
 ## 🤔 Why
@@ -540,10 +548,15 @@ detail in [§9](README.zh-CN.md#known-limitations).
   exactly the same label as one that was installed and never touched. The label is
   deliberately about the inventory row, not about usage: nothing in this column is a claim
   that the thing ran.
-- **M17** The TUI's **tab-level** columns, panels and labels mirror the sibling
-  CodeBuddy tracker's, but the two pushed **detail** screens and the status line keep
-  ocut's own fields: OpenCode names no plugin `target`/`marketplace` and reports no
-  separate cache hit/miss beside `cache_read`, so the plugin-history and
+- **M17** The TUI's **structure** — the eight tabs, their panels, their windows —
+  mirrors the sibling CodeBuddy tracker's, on purpose: one mental model for both
+  trackers. The **fields are ocut's own**, re-derived from what OpenCode records
+  rather than copied for symmetry, so the tab level already diverges where the hosts
+  do — Usage/Responses/Tokens carry a `Cost` column OpenCode's per-step price makes
+  real, Tools shows `run` where cbut shows `pend`, and the dashboard reports `Failed`
+  and `Running` separately. The two pushed **detail** screens and the status line
+  keep ocut's own fields too: OpenCode names no plugin `target`/`marketplace` and
+  reports no separate cache hit/miss beside `cache_read`, so the plugin-history and
   model-response tables cannot be column-for-column identical without inventing a
   field.
 
