@@ -1814,3 +1814,24 @@ Cost     Tabs are renamed and reordered, the default list hides installed-but-id
          A custom window is shown as `Custom…` in the Select and as its span on the button,
          because one control cannot carry both without printing the range twice.
 Commit   c2ac1e9
+
+### D-086 · 2026-10-22 · fix
+
+Symptom  `ocut stats --help` printed the launcher's header instead of the stats parser's options.
+         The help scan walked every argument, so a `--help` placed after a subcommand was consumed
+         before that subcommand saw it — every route's own options were unreachable. cbut and qcut
+         had always passed it through, so the same habit gave a different answer inside one family.
+
+Change   The scan stops at the first non-flag token: a bare `--help` (or the word `help`) is still
+         answered before the interpreter or the scripts directory is resolved, which is what keeps
+         it working on a broken install, but a subcommand now owns everything after it. A guard
+         test walks `ocut stats --help` through the stub scripts and asserts it reaches
+         `ocut-stats.py` with its argv intact.
+
+Evidence `test_ocut_dispatcher.py::test_a_subcommand_keeps_its_own_help`, plus the existing
+         `test_help_works_with_a_broken_install`, which still passes: 40 dispatcher tests green.
+
+Cost     One behaviour change at the launcher: `ocut --help` still prints the command list, but
+         `ocut <route> --help` no longer does. Nothing reads the header from a subcommand.
+
+Commit   0f51b65
