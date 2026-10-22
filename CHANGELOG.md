@@ -1948,3 +1948,19 @@ Evidence L0 2026-10-22: 120x45 -> 160x60 -> 120x20 -> 120x45 on the real index: 
 Cost     One subclass and a private call (`getattr(app, "_fit_dashboard")`) instead of the
          app-level hook; the app no longer knows when its own dashboard was resized.
 Commit   95633aa
+
+### D-094 · 2026-10-22 · taste
+Symptom  The Tokens tab ended in `Share` — the Usage Total three cells left restated as a
+         percentage of the window's total, computed per row in the tab fill (and over the
+         unfiltered result, so a live filter did not change it). cbut and qcut end the same
+         table with `Last used`; ocut was the odd one out, and no other reader consumed the
+         `share_pct` it computed.
+Change   `Share` is gone and the table ends with `Last used` — `MAX(ts)` of the model's calls
+         in the window, added to `q_model_tokens` — so all three trackers close Tokens the same
+         way. The per-row share computation in the tab fill went with it.
+Evidence L0 2026-10-22: full suite green (384 tests); the column plan derives from
+         `TOKEN_COLUMNS`, so a narrow terminal now drops `Last used` last where it dropped
+         `Share`.
+Cost     A reader who wants a model's fraction of the window derives it from the Usage Total
+         the row already shows.
+Commit   a1d7077
