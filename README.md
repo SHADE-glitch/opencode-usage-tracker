@@ -260,7 +260,8 @@ the answer, not noise around it. `enter` drills down using the same window.
   entry has no request or token to report, and the id in the config is a route name, not
   necessarily the model behind it). History is the durable side: a model removed from the
   config keeps the rows its own steps earned. Columns lead with `Usage Total`, `Cost` and
-  `Requests`, then the token family, the cache breakdown and `Share` last.
+  `Requests`, then the token family, the cache breakdown and `Last used` last — the old
+  `Share` column restated the Usage Total as a percentage and is gone, as on cbut and qcut.
 
 The **Usage** tab is the request log for the window you pick — one row per model step,
 with provider, usage total, cost, the token family, the cache breakdown, project and

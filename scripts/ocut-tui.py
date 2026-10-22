@@ -244,12 +244,13 @@ USAGE_COLUMNS = ("Time", "Model", "Provider", "Usage Total", "Cost", "Input",
                  "Output", "Cache hit", "Cache miss",
                  "Cache write", "Cache hit rate", "Project", "Agent")
 
-# Tokens-tab column order mirrors the family: the measure family leads, and the
-# page's own `Share` sits last, where it can drop without taking a measurement
-# with it. The cache counts stay so a reader can see what the rate was made of.
+# Tokens-tab column order mirrors the family: the measure family leads, and
+# `Last used` sits last, as it does on cbut and qcut. Share went the same way:
+# it restated the Usage Total three cells left as a percentage of the window.
+# The cache counts stay so a reader can see what the rate was made of.
 TOKEN_COLUMNS = ("Model", "Provider", "Usage Total", "Cost", "Requests",
                  "Input", "Output", "Cache hit", "Cache miss",
-                 "Cache write", "Cache hit rate", "Share")
+                 "Cache write", "Cache hit rate", "Last used")
 
 # Entity tabs and the two detail screens. Declared here rather than inline at
 # `add_columns` because the column plan needs the full list to compute a prefix from,
@@ -396,7 +397,6 @@ def _token_row(r, kind):
     read/input/write."""
     hit = db.cache_hit_rate(r["cache_read"], r["prompt_tokens"],
                             r["cache_write"])
-    share = r["share_pct"] if "share_pct" in r.keys() else None
     return [r["model"], db.provider_label(r["provider"]),
             fmt_n(_usage_total_tokens(r["prompt_tokens"],
                                       r["completion_tokens"],
@@ -409,7 +409,7 @@ def _token_row(r, kind):
             fmt_n(r["prompt_tokens"]),
             fmt_n(r["cache_write"]),
             "-" if hit is None else f"{hit * 100:.1f}%",
-            "-" if share is None else f"{share:.1f}%"]
+            ts(r["last_used"])]
 
 
 ENTITY_TABS = (
@@ -2206,18 +2206,6 @@ if HAVE_TEXTUAL:
             """
             found = list(getattr(db, tab.query)(conn, start_ts=start,
                                                 end_ts=end))
-            if tab.kind == "model":
-                # Share is a property of the window's total, so it is computed over
-                # the whole result before any filter. Copy to a dict: sqlite3.Row
-                # cannot be extended.
-                total = sum(_usage_total_tokens(
-                    r["prompt_tokens"], r["completion_tokens"],
-                    r["cache_read"], r["cache_write"]) or 0 for r in found)
-                found = [dict(r, share_pct=(
-                    (100.0 * (_usage_total_tokens(
-                        r["prompt_tokens"], r["completion_tokens"],
-                        r["cache_read"], r["cache_write"]) or 0) / total)
-                    if total else None)) for r in found]
             count_key = tab.count_key
             used = [r for r in found if (r[count_key] or 0) > 0]
             show_all = self._show_all.get(tab.pane, tab.always_all)

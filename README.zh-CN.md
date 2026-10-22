@@ -230,7 +230,8 @@ Tools tab 里由同一批行算出，按天历史是 Usage 页窗口的本职。
   `(模型, provider)` 一行，配置里只是「提供」但没回答过的模型不占行（目录项没有请求也没有
   token，而配置里的 id 是路由名，未必等于背后真正回答的模型）。历史才是持久的一侧：
   从配置里移除的模型保留它自己挣到的行。列以 `Usage Total`、`Cost`、`Requests` 开头，
-  随后是 token 家族、cache 明细，`Share` 放最后。
+  随后是 token 家族、cache 明细，`Last used` 放最后——原先的 `Share` 列只是把三格之前的
+  Usage Total 换算成百分比，已随 cbut、qcut 一并移除。
 
 **Usage** tab 是你所选窗口的请求日志——一行一个模型步，带 provider、usage total、cost、
 token 家族、cache 明细、项目与 agent。每个 tab 各自保留自己的时间窗口（`7d` 这类预设，

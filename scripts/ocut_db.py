@@ -1679,6 +1679,7 @@ def q_model_tokens(conn, start_ts=None, end_ts=None):
         " SUM(cache_read) AS cache_read,"
         " SUM(cache_write) AS cache_write,"
         " SUM(cost) AS cost,"
+        " MAX(ts) AS last_used,"
         f" {_AGG_TOTAL_EXPR} AS total_tokens,"
         f" {_AGG_TOTAL_SOURCE_EXPR} AS total_tokens_source,"
         f" {_AGG_PROMPT_TOTAL_EXPR} AS prompt_total_tokens"
