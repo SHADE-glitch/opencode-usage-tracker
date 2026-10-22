@@ -2440,6 +2440,7 @@ if HAVE_TEXTUAL:
             # event.size carries the NEW size (self.size still lags here).
             self._apply_responsive_layout(event.size.width)
             self._plan_wide_tables(event.size.width)
+            self.call_after_refresh(self._fit_dashboard)
 
         def _range_of(self, pane):
             """The window key for a pane (``None`` only if a pane has no range)."""
@@ -2616,6 +2617,42 @@ if HAVE_TEXTUAL:
                 self.query_one("#dash-note", Static).update(
                     "Range: the top bar · this tab keeps its own window")
             self._apply_responsive_layout()
+            self.call_after_refresh(self._fit_dashboard)
+
+        #: Each .dash-row carries one row of bottom margin.
+        DASH_MARGIN = 1
+
+        def _fit_dashboard(self, settle: bool = True) -> None:
+            """Let the project ledger take the height the rows above it leave.
+
+            Every row is content-sized, so on a tall terminal the box ended a
+            dozen rows above the status line. The ledger is the only panel that
+            can *use* extra rows — it shows one per project — so it grows into
+            them, and only into them: when the rows above already fill the box
+            the spare is zero and the ledger keeps its natural height, which is
+            what keeps a long list scrolling instead of clipped.
+
+            The spare is measured from the rows above and the table's own row
+            count, never from the table's current height, so calling this twice
+            gives the same answer.
+            """
+            try:
+                box = self.query_one("#dash-box")
+                note = self.query_one("#dash-note", Static)
+                rows = [self.query_one(f"#dash-row-{i}") for i in (1, 2, 3)]
+                table = self.query_one("#dash-projects", DataTable)
+            except Exception:  # the Dashboard is not mounted yet
+                return
+            natural = 1 + table.row_count          # the header, then one row each
+            above = (note.size.height + rows[0].size.height + rows[1].size.height
+                     + 3 * self.DASH_MARGIN)
+            spare = box.size.height - above - (natural + 3)   # + title + border
+            table.styles.min_height = natural + max(0, spare)
+            # One correction pass: the sizes above are the ones the *previous*
+            # layout left, so a window switch can make the first answer too
+            # generous. Re-running after this refresh lands on the settled ones.
+            if settle:
+                self.call_after_refresh(lambda: self._fit_dashboard(False))
 
         def _put_panel(self, wid: str, label: str, val: str) -> None:
             self.query_one(wid, Static).update(self._panel_line(label, val))

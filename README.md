@@ -224,7 +224,9 @@ token totals, each label printed beside its number:
 Below those sit the `Top models` and `Top tools` leaderboards, then a **Projects** board
 with requests, usage, cost, sessions and last use per project. The board grows with its
 rows and the pane scrolls once the screen is full, so a project list longer than the
-terminal is reachable rather than truncated. A Runtime panel and a `Calls per day` trend
+terminal is reachable rather than truncated. It also takes the height the rows above it
+leave, so the dashboard ends at the status line instead of stopping short; the scrolling
+case is unchanged. A Runtime panel and a `Calls per day` trend
 used to take the fourth row; both were removed — the failures and running count are on
 the Tools tab, computed from the same rows, and the per-day history is what the Usage
 page's window is for. `Plugins` counts the distinct plugins the optional hook recorded in

@@ -482,6 +482,36 @@ def test_the_dashboard_draws_no_runtime_or_calls_per_day_panel(tracker, clock):
     drive(lambda: tui.TrackerApp(str(tracker), clock=clock), body)
 
 
+def test_the_project_ledger_takes_the_height_the_rows_leave(tracker, clock):
+    """A content-sized dashboard ended above the status line on a tall screen.
+
+    The ledger is the only panel that can use extra rows, so it grows into
+    them; on a short screen it keeps its natural height and the box scrolls, so
+    the growth can never clip a project.
+    """
+    from textual.widgets import Static
+
+    async def tall(pilot, app):
+        box = app.query_one("#dash-box")
+        table = app.query_one("#dash-projects", DataTable)
+        note = app.query_one("#dash-note", Static)
+        assert box.max_scroll_y == 0, "a tall dashboard still scrolls"
+        assert table.size.height > 1 + table.row_count, (
+            "the ledger never took the spare height")
+        assert note.region.bottom == box.region.bottom, (
+            "the ledger did not reach the bottom of the box")
+
+    async def short(pilot, app):
+        box = app.query_one("#dash-box")
+        table = app.query_one("#dash-projects", DataTable)
+        assert table.size.height == 1 + table.row_count, (
+            "a short box grew the ledger instead of scrolling")
+        assert box.max_scroll_y > 0, "the short box does not scroll"
+
+    drive(lambda: tui.TrackerApp(str(tracker), clock=clock), tall, size=(120, 45))
+    drive(lambda: tui.TrackerApp(str(tracker), clock=clock), short, size=(120, 20))
+
+
 def test_token_panels_print_the_hosts_own_step_numbers(tracker, clock):
     """The Tokens panel sums `model_calls` — the per-step granularity, not the rollup.
 
