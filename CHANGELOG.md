@@ -1886,3 +1886,16 @@ Cost     Failures/running are one keystroke further (Tools) and the per-day shap
          only through window changes. In exchange every dashboard row answers the window it
          is set to.
 Commit   b54aa41
+
+### D-090 · 2026-10-22 · fix
+Symptom  Two layout faults at 140 columns, both invisible to the suite: the leaderboard line
+         was 43 cells inside a 41-cell panel (so `req` wrapped onto its own row), and the
+         three-up breakpoint sat at 150, which pushed the Cache panel onto a full-width row
+         of its own and left two panels beside a hole.
+Change   The model line is 40 cells (label 20, total 7) and `COMPACT_WIDTH` is 140 — the
+         width at which three 44-cell cells stop fitting in the pane.
+Evidence 2026-10-22: rendered at 140x42 in tmux — three panels in row 1, the leaderboards in
+         row 2, the project board in row 3, no wrapped line. Suite green (383 tests).
+Cost     One cell of the model name and one of the token total are gone at 140 columns; the
+         Tokens tab still prints both in full.
+Commit   7fc2a14
