@@ -234,11 +234,12 @@ def test_readme_documents_the_dashboard_panels():
     # The KPI labels are what `_put_panel` writes; a rename there must fail here.
     for label in ("Tool calls", "Skills", "Agents", "MCP", "Plugins"):
         assert label in text, f"Dashboard KPI not documented: {label}"
-    # The token, cache and runtime panels.
-    for label in ("Requests", "Input", "Output", "API Total", "Usage Total",
-                  "Cache hit", "Cache miss", "Cache write", "Hit rate",
-                      "Completed", "Failed", "Running", "Avg tool time",
-                      "Sessions", "Subagents", "Projects"):
+    # The usage, token, cache and runtime panels, and the two boards below them.
+    for label in ("Requests", "Cost", "Input", "Output", "API Total",
+                  "Usage Total", "Cache hit", "Cache miss", "Cache write",
+                  "Cache hit rate", "Completed", "Failed", "Running",
+                  "Avg tool time", "Sessions", "Subagents", "Projects",
+                  "Top models", "Top tools", "Calls per day"):
         assert label in text, f"Dashboard panel not documented: {label}"
 
 

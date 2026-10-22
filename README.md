@@ -185,76 +185,83 @@ ocut
 ```
 
 Needs a real terminal (`stdin`/`stdout`/`stderr` all TTYs).
-Pages: **Dashboard / Tools / Skills / Agents / MCP / Plugins / Models / Requests** (eight
-tabs, in that order). The tab bar and footer are the whole key surface:
+Pages: **Dashboard / Tools / Skills / Agents / Plugins / MCP / Tokens / Usage** (eight
+tabs, in that order — the same slots as the sibling trackers). The tab bar and footer are
+the whole key surface:
 
 | Key | Action |
 |---|---|
 | `q` | quit |
-| `r` | refresh — run an incremental sync, then reload the screen |
-| `s` | toggle auto-sync (the 30-second background indexer) |
+| `r` | sync now — run an incremental sync, then reload the screen |
+| `s` | cycle the active tab's sort order |
 | `a` | on an entity tab, toggle the full installed ∪ history list (the default is rows used in this window) |
-| `o` | cycle the active tab's sort order |
-| `/` | open the filter box for the active tab; `enter` keeps it, `escape` clears it |
+| `/` | filter the active tab; the bar stays visible while a filter is applied, `enter` returns to the table, `escape` clears it |
 | `d` | pick the active tab's time window |
 | `tab` | next tab |
 | `shift+tab` | previous tab |
 | `enter` / double-click | open the selected row's detail screen |
-| `c` | on an agent's history screen, open the child sessions its task calls spawned |
 | `escape` / `q` | clear the active filter, or go back from a pushed detail screen |
 
+The TUI syncs once when it opens and reloads only on `r` or a tab switch; there is no
+background refresh timer. A filter edit starts the list at its first match, and the
+summary line names the active sort and the match count.
+
 The top bar keeps two separate controls: the preset **Select** (Today, 2 / 3 / 7 /
-30 days, all time) is the fixed range for the active tab, and **📅 Custom…** opens
+14 / 30 days, all time) is the fixed range for the active tab, and **📅 Custom…** opens
 the calendar for an arbitrary span. A custom window reads `Custom…` in the Select
 and names its span on the button; cancelling the picker restores the preset. `d`
 opens the same calendar. Each tab remembers its own choice.
 
-The **Dashboard** is three rows of panels. The first row is the headline counts and the
+The **Dashboard** is four rows of panels. The first row is the headline counts and the
 token totals, each label printed beside its number:
 
 | Panel | Labels |
 |---|---|
-| Usage | `Tool calls`, `Skills`, `Agents`, `MCP`, `Plugins` |
-| Tokens | `Requests`, `Input`, `Output`, `API Total`, `Usage Total`, `Hit rate`, `Cost` |
+| Usage | `Requests`, `Cost`, `Sessions`, `Projects`, `Tool calls`, `Skills`, `Agents`, `MCP`, `Plugins` |
+| Tokens | `Usage Total`, `Input`, `Output`, `API Total`, `Cache hit rate` |
 | Cache | `Cache hit`, `Cache miss`, `Cache write` |
-| Runtime | `Completed`, `Failed`, `Running`, `Avg tool time`, `Sessions`, `Subagents`, `Projects` |
+| Runtime | `Completed`, `Failed`, `Running`, `Avg tool time`, `Sessions`, `Projects`, `Subagents` |
 
-Below those sit the `Top models`, `Top tools` and `Top modes` leaderboards, and a
-`Calls / cost per day` trend — two series over the same local days, because a cheap-call
-day and an expensive one read identically as call counts. `Plugins` counts the distinct plugins the optional hook recorded in the window —
-a passive reader has no evidence a plugin or command ran unless the hook wrote it (M3).
+Below those sit the `Top models` and `Top tools` leaderboards, a `Calls per day` trend
+(the cost series rides under it on the same local days, because a cheap-call day and an
+expensive one read identically as call counts), and a **Projects** board with requests,
+usage, cost, sessions and last use per project. `Plugins` counts the distinct plugins the
+optional hook recorded in the window — a passive reader has no evidence a plugin or
+command ran unless the hook wrote it (M3). `Cost` is OpenCode's own per-step price, the
+slot credits occupy on the sibling trackers; OpenCode records no credits to show instead.
 
-The **Tools / Skills / Agents / MCP / Plugins / Models** tabs are one row per entity.
+The **Tools / Skills / Agents / Plugins / MCP / Tokens** tabs are one row per entity.
 Each starts with the rows that were **used in that tab's own window**; `a` toggles the full
-installed ∪ history union, `o` cycles the tab's sort, and `/` filters the rendered rows
-(a category or a state matches too). Plugins and Models are always full: their list *is*
+installed ∪ history union, `s` cycles the tab's sort, and `/` filters the rendered rows
+(a category or a state matches too). Plugins and Tokens are always full: their list *is*
 the answer, not noise around it. `enter` drills down using the same window.
 
-- **Tools** — one row per canonical tool name, with the host's `category`, calls,
-  ok / fail / run, average duration and last use. Two builtin tools were renamed across
+- **Tools** — one row per canonical tool name, with calls, ok / fail / run, average
+  duration, last use and the host's `category` last. Two builtin tools were renamed across
   layouts (v1 `bash` → v2 `shell`, v1 `task` → v2 `subagent`), so they appear as **one**
   row under the current name and a drill-down from either spelling returns both (M18).
 - **Skills** — calls, success, average duration, last use and state. The inventory is a
   real census, so an installed-but-idle skill is reachable with `a` and reads `installed`.
 - **Agents** — calls, ok / fail, the number of **children** its task calls spawned,
-  average duration and last use. On an agent's history, `c` opens those **child sessions**
-  — each with its own token rollup, because the host bills a subagent's steps to the parent.
+  average duration and last use. The child count is the evidence the host keeps; the
+  subagent's own token rollup is billed to the parent session, not shown as a separate page.
+- **Plugins** — what each plugin ships (`tools`, `skills`, `agents`, `cmds`), how often
+  the optional hook saw it run, last use and state.
 - **MCP** — grouped by **server** first, because a server is the unit OpenCode configures.
   `enter` opens that server's tools, then `enter` on a tool opens its call history scoped
   to `(server, tool)` — two servers exposing one tool name stay two histories. The headless
   `ocut mcp` report remains the flat per-tool table.
-- **Plugins** — what each plugin ships (`tools`, `skills`, `agents`, `cmds`), how often
-  the optional hook saw it run, last use and state.
-- **Models** — per-model token totals from the host's own step records: one row per
+- **Tokens** — per-model token totals from the host's own step records: one row per
   `(model, provider)` that answered, never a model the config merely offers (a catalogue
   entry has no request or token to report, and the id in the config is a route name, not
   necessarily the model behind it). History is the durable side: a model removed from the
-  config keeps the rows its own steps earned.
+  config keeps the rows its own steps earned. Columns lead with `Usage Total`, `Cost` and
+  `Requests`, then the token family, the cache breakdown and `Share` last.
 
-The **Requests** tab is the request log for the window you pick — one row per model step,
-with project, agent, model, provider, token totals, cost and the cache breakdown. Each tab
-keeps its own time window (a preset like `7d`, or a custom span), so changing one tab's
-window never moves another's.
+The **Usage** tab is the request log for the window you pick — one row per model step,
+with provider, usage total, cost, the token family, the cache breakdown, project and
+agent. Each tab keeps its own time window (a preset like `7d`, or a custom span), so
+changing one tab's window never moves another's.
 
 **State** is printed only where a census exists — **Skills**, **Plugins** and **MCP** — and
 it describes the row it sits on: `in use` only when that row has calls **inside the tab's
@@ -348,11 +355,9 @@ standard library's `tomllib`.
 | Key | Default | Environment | What it changes |
 |---|---|---|---|
 | `top_n` | `5` | `OCUT_TOP_N` | rows in the Dashboard's Top models / Top tools |
-| `log_limit` | `100` | `OCUT_LOG_LIMIT` | request rows on the Requests tab |
+| `log_limit` | `100` | `OCUT_LOG_LIMIT` | request rows on the Usage tab |
 | `detail_limit` | `200` | `OCUT_DETAIL_LIMIT` | rows on a history / model-response screen |
 | `name_cap` | `28` | `OCUT_NAME_CAP` | widest cell a table renders before the name is clipped |
-| `refresh_secs` | `5` | `OCUT_REFRESH_SECS` | TUI redraw timer |
-| `sync_secs` | `30` | `OCUT_SYNC_SECS` | TUI auto-sync timer |
 
 A file that cannot be read is an **error**, not a fallback: an unknown key, malformed
 TOML, a value of the wrong type, or a value outside its bounds is a hard failure that
@@ -438,7 +443,7 @@ Views: `v_tools`, `v_skills`, `v_agents`, `v_mcp`, `v_plugins`.
 - `inventory` — what is installed, from the host's directories and config: skills, agents,
   commands, MCP servers, plugins, providers, the models each configured provider offers,
   and the tool ids each plugin registers. A `model` row's `owner_plugin` is its provider
-  id. This catalogue answers `ocut inventory`; it is **not** a Models row — Models lists
+  id. This catalogue answers `ocut inventory`; it is **not** a Tokens row — Tokens lists
   only models that answered, so an offered-but-unused model does not appear there.
 - `plugin_usage` — one row per plugin tool/command call the hook saw. This is the one
   table fed from outside the host database.
@@ -583,7 +588,7 @@ detail in [§9](README.zh-CN.md#known-limitations).
   this reader does not do. A skill installed only at project level therefore does
   not appear as installed. Put shared skills in one of the two roots above and they
   will.
-- **M13** The Models and Requests lists show a `Cache miss` column and a `Usage Total`
+- **M13** The Tokens and Usage lists show a `Cache miss` column and a `Usage Total`
   even though the host publishes no such fields: the host's usage record carries only an
   *uncached* `prompt_tokens` plus `tokens.cache.read` / `tokens.cache.write` (v1's
   `step-finish`, v2's assistant `tokens`). The labels
@@ -611,7 +616,7 @@ detail in [§9](README.zh-CN.md#known-limitations).
   from the sibling CodeBuddy tracker's, on purpose: one mental model for both trackers.
   The **fields and boundaries are ocut's own**, re-derived from what OpenCode records
   rather than copied for symmetry, so the tab level diverges where the hosts do —
-  Requests/Responses/Models carry a `Cost` column OpenCode's per-step price makes real,
+  Usage/Responses/Tokens carry a `Cost` column OpenCode's per-step price makes real,
   Tools shows `run` where cbut shows `pend`, Agents shows spawned `children`, MCP groups
   by server before tool, and the dashboard reports `Failed` and `Running` separately. The two pushed **detail** screens and the status line
   keep ocut's own fields too: OpenCode names no plugin `target`/`marketplace` and

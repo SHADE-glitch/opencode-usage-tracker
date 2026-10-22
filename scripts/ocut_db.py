@@ -99,8 +99,6 @@ DEFAULTS = {
                           # data, not a round number — every entity name fits it,
                           # only the project path does not. See NAME_CAP in
                           # ocut-tui.py.
-    "refresh_secs": 5,    # TUI redraw timer
-    "sync_secs": 30,      # TUI auto-sync timer
 }
 
 ENV_NAMES = {
@@ -108,8 +106,6 @@ ENV_NAMES = {
     "log_limit": "OCUT_LOG_LIMIT",
     "detail_limit": "OCUT_DETAIL_LIMIT",
     "name_cap": "OCUT_NAME_CAP",
-    "refresh_secs": "OCUT_REFRESH_SECS",
-    "sync_secs": "OCUT_SYNC_SECS",
 }
 
 # (low, high, accepted types). Ranges are wide enough to be useful and tight
@@ -121,8 +117,6 @@ _BOUNDS = {
     "detail_limit": (1, 1000, int),
     # below 8 nothing readable survives the cut; above ~200 the cap is not a cap
     "name_cap": (8, 200, int),
-    "refresh_secs": (0.5, 3600, (int, float)),
-    "sync_secs": (1, 86400, (int, float)),
 }
 
 
@@ -1224,30 +1218,6 @@ def q_agents(conn, limit=None, start_ts=None, end_ts=None):
     return conn.execute(sql, params).fetchall()
 
 
-def q_child_sessions(conn, agent_type, limit=50, start_ts=None, end_ts=None):
-    """The child sessions one agent type's task calls spawned, newest first.
-
-    OpenCode records a subagent run as its own session row (`parent_id`,
-    `is_subagent`) and links it from the call through `child_session_id`. The
-    host bills the parent for the child's steps — measured on this host, all
-    457 child sessions carry `cost` 0 — so the child's own token rollup is the
-    only usage evidence it has, and this query is how the Agents drill-down
-    reaches it. A task call whose child never got a session row (the host never
-    wrote one) has nothing to show here; that is the join, not a filter.
-    """
-    conds = [("a.agent_type = ?", agent_type)] + _time_conds(start_ts, end_ts, col="a.ts")
-    where = " WHERE " + " AND ".join(c for c, _ in conds)
-    sql = (
-        "SELECT s.session_id, s.started_at, s.ended_at,"
-        " (s.ended_at - s.started_at) AS duration_ms,"
-        " s.agent, s.model, s.provider, s.directory, s.project,"
-        " s.tokens_input, s.tokens_output, s.tokens_reasoning,"
-        " s.tokens_cache_read, s.tokens_cache_write, s.cost,"
-        " a.ts AS called_at, a.call_id"
-        " FROM agent_usage a JOIN sessions s ON s.session_id = a.child_session_id"
-        f"{where} ORDER BY a.ts DESC LIMIT {int(limit)}")
-    return conn.execute(sql, _cond_params(conds)).fetchall()
-
 def q_mcp(conn, limit=None, start_ts=None, end_ts=None):
     """One row per (server, tool) pair, from the union of configured and used.
 
@@ -2071,6 +2041,8 @@ def q_usage_kpi(conn, start_ts=None, end_ts=None) -> dict:
     question as "how many calls happened in it". ``plugins`` is
     ``COUNT(DISTINCT plugin)`` over ``plugin_usage`` (the hook's sidecar) — the
     windowed form of what the Plugins tab lists, matching CodeBuddy's Dashboard.
+    ``model_sessions``/``model_projects`` are the reach of the model steps
+    themselves, kept apart from the started-session count and the tool-call reach.
     """
     where, params = _time_filter(start_ts, end_ts, col="ts")
     started, started_params = _time_filter(start_ts, end_ts, col="started_at")
@@ -2086,6 +2058,14 @@ def q_usage_kpi(conn, start_ts=None, end_ts=None) -> dict:
         "mcp": one(f"SELECT COUNT(*) FROM mcp_usage{where}"),
         "plugins": one(f"SELECT COUNT(DISTINCT plugin) FROM plugin_usage{where}"),
         "sessions": one(f"SELECT COUNT(*) FROM sessions{started}", started_params),
+        # The usage-facing reach: sessions and projects that produced a model
+        # step in the window, not sessions that merely started in it. The
+        # Dashboard's Usage panel shows these beside Requests and Cost; the
+        # Runtime panel keeps the tool-call reach, as `q_usage_activity` defines it.
+        "model_sessions": one(
+            f"SELECT COUNT(DISTINCT session_id) FROM model_calls{where}"),
+        "model_projects": one(
+            f"SELECT COUNT(DISTINCT project) FROM model_calls{where}"),
     }
 
 
@@ -2159,6 +2139,39 @@ def q_usage_model_stats(conn, start_ts, end_ts, order_by="total_tokens"):
         f" GROUP BY model, provider ORDER BY {order}",
         params,
     ).fetchall()
+
+
+def q_project_board(conn, start_ts=None, end_ts=None, limit=None):
+    """Per-project requests, tokens and money for the Dashboard's board.
+
+    Grouped by the host's project id (one repo, one row), with the most recent
+    ``directory`` as the readable label. The token parts stay separate so the
+    TUI can compute `Usage Total` with the same helper the tokens pages use —
+    a SQL-only total would disagree with them on a row the host left NULL.
+    """
+    where, params = _time_filter(start_ts, end_ts)
+    sql = (
+        "SELECT COALESCE(project, '(no project)') AS project,"
+        " MAX(directory) AS directory,"
+        " COUNT(*) AS requests,"
+        " COUNT(DISTINCT session_id) AS sessions,"
+        " SUM(prompt_tokens) AS prompt_tokens,"
+        " SUM(completion_tokens) AS completion_tokens,"
+        " SUM(cache_read) AS cache_read,"
+        " SUM(cache_write) AS cache_write,"
+        " SUM(cost) AS cost,"
+        " MIN(ts) AS first_used, MAX(ts) AS last_used"
+        f" FROM model_calls{where}"
+        " GROUP BY project"
+        " ORDER BY (COALESCE(SUM(prompt_tokens), 0)"
+        " + COALESCE(SUM(completion_tokens), 0)"
+        " + 2 * COALESCE(SUM(cache_read), 0)"
+        " + COALESCE(SUM(cache_write), 0)) DESC,"
+        " requests DESC, project"
+    )
+    if limit:
+        sql += f" LIMIT {int(limit)}"
+    return conn.execute(sql, params).fetchall()
 
 
 def q_mode_stats(conn, start_ts=None, end_ts=None, by="agent", limit=None):

@@ -35,10 +35,9 @@ _spec.loader.exec_module(tui)
 # drift and the TUI is tested against a host that no longer exists.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_ocut_sync as ts_sync                        # noqa: E402
-import test_ocut_drill as drill_tests                   # noqa: E402
 
 TRACKER_TABS = ["tab-dashboard", "tab-tools", "tab-skills", "tab-agents",
-                "tab-mcp", "tab-plugins", "tab-tokens", "tab-usage"]
+                "tab-plugins", "tab-mcp", "tab-tokens", "tab-usage"]
 
 DAY = 86_400_000
 
@@ -290,8 +289,8 @@ def test_the_tracker_shows_cbuts_eight_tabs_in_order(tracker):
         # and its ids name the pane it switches to.
         tabs = [(x.id, str(x.label)) for x in app.query(Tab)]
         assert [label for _id, label in tabs] == [
-            "Dashboard", "Tools", "Skills", "Agents", "MCP", "Plugins", "Models",
-            "Requests"], tabs
+            "Dashboard", "Tools", "Skills", "Agents", "Plugins", "MCP", "Tokens",
+            "Usage"], tabs
         assert [_id.replace("--content-tab-", "") for _id, _l in tabs] == TRACKER_TABS
     drive(lambda: tui.TrackerApp(str(tracker)), body)
 
@@ -530,13 +529,13 @@ def test_the_dashboard_shows_cost_failed_and_running_separately(tracker, clock):
         app._refresh_active_tab()
         await pilot.pause(0.6)
         got = {w.id: str(w.content) for w in app.query(
-            "#dash-tok-cost, #dash-rt-failed, #dash-rt-running")}
+            "#dash-sum-cost, #dash-rt-failed, #dash-rt-running")}
         failed = conn.execute("SELECT COUNT(*) FROM tool_calls"
                               " WHERE status='error'").fetchone()[0]
         running = conn.execute("SELECT COUNT(*) FROM tool_calls"
                                " WHERE status='running'").fetchone()[0]
         cost = conn.execute("SELECT SUM(cost) FROM model_calls").fetchone()[0]
-        assert f"${cost:.4f}" in got["dash-tok-cost"], got
+        assert f"${cost:.4f}" in got["dash-sum-cost"], got
         assert f"{failed:,}" in got["dash-rt-failed"], got
         assert f"{running:,}" in got["dash-rt-running"], got
         # Two panels, two numbers — the old sum would fail this line.
@@ -708,7 +707,7 @@ def test_only_censused_tabs_print_a_state_column(tracker):
             (tab.kind, tab.columns)
         if has_state:
             assert tab.columns[-1] == db.ENTITY_STATE_COLUMN, tab.columns
-    assert tui.TOOLS_COLUMNS[-1] == "last used", tui.TOOLS_COLUMNS
+    assert tui.TOOLS_COLUMNS[-1] == "category", tui.TOOLS_COLUMNS
     assert tui.AGENTS_COLUMNS[-1] == "last used", tui.AGENTS_COLUMNS
     assert tui.MCP_COLUMNS[0] == "server", tui.MCP_COLUMNS
 
@@ -937,32 +936,36 @@ def test_the_sync_runs_in_a_daemon_thread_so_quitting_never_waits(tmp_path):
         "the sync thread must be a daemon, or quitting waits for it")
 
 
-def test_the_dashboard_shows_modes_subagents_and_a_cost_series(tracker, clock):
-    """The three OpenCode-native panels the sibling tracker cannot have.
+def test_the_dashboard_shows_projects_subagents_and_a_cost_series(tracker, clock):
+    """The OpenCode-native panels the sibling tracker cannot have.
 
-    A cost-bearing step under one agent mode is inserted by hand; the fixture
+    A cost-bearing step in its own project is inserted by hand; the fixture
     sessions are all main-agent sessions, so the Subagents line reads 0/2.
     Each panel is read against what the window's own SQL would produce.
     """
     conn = sqlite3.connect(tracker)
     ts = int(clock() * 1000) - 60_000
     conn.execute(
-        "INSERT INTO model_calls(call_id, model, provider, agent, variant,"
-        " prompt_tokens, completion_tokens, total_tokens, cost, ts)"
-        " VALUES('prt_mode', 'model-x', 'vendor', 'build', 'max', 10, 5, 15,"
-        " 0.0125, ?)", (ts,))
+        "INSERT INTO model_calls(call_id, model, provider, project, directory,"
+        " agent, variant, prompt_tokens, completion_tokens, total_tokens, cost,"
+        " ts) VALUES('prt_mode', 'model-x', 'vendor', 'p_board', '/home/u/proj',"
+        " 'build', 'max', 10, 5, 15, 0.0125, ?)", (ts,))
     conn.commit()
 
     async def body(pilot, app):
         app.tab_range["tab-dashboard"] = "all"
         app._refresh_active_tab()
         await pilot.pause(0.6)
-        modes = str(app.query_one("#dash-modes").content)
-        assert "build" in modes and "$0.0125" in modes, modes
+        board = app.query_one("#dash-projects", DataTable)
+        labels = [cell(board, i, 0) for i in range(board.row_count)]
+        assert "proj" in labels, labels
+        row = labels.index("proj")
+        assert cell(board, row, 1) == "1", cell(board, row, 1)
+        assert "$0.0125" in cell(board, row, 3), cell(board, row, 3)
         sub = str(app.query_one("#dash-rt-subagents").content)
         assert "0 of 2" in sub, sub
         axis = str(app.query_one("#dash-cost-axis").content)
-        assert "peak $0.01/day" in axis, axis
+        assert "cost · peak $0.01/day" in axis, axis
         bars = str(app.query_one("#dash-cost").content)
         assert bars.strip() and "·" not in bars, (
             "a day with cost must draw a bar, not the dotted empty state", bars)
@@ -970,44 +973,99 @@ def test_the_dashboard_shows_modes_subagents_and_a_cost_series(tracker, clock):
     conn.close()
 
 
-def test_an_agent_history_opens_its_child_sessions(tracker, clock):
-    """`c` on an agent's call list shows the sessions its task calls spawned.
+# --- keyboard chrome: sort, filter, scroll and pushed screens --------------
 
-    The fixture's explore task call names `ses_child`; the child session row
-    is inserted here because the host writes it only when a session actually
-    ran. The screen shows the child's own token rollup — the evidence the
-    host keeps, since the child is billed on the parent.
-    """
-    conn = sqlite3.connect(tracker)
-    conn.execute(
-        "INSERT INTO sessions(session_id, project, directory, agent, model,"
-        " provider, parent_id, is_subagent, started_at, ended_at, cost,"
-        " tokens_input, tokens_output, tokens_reasoning, tokens_cache_read,"
-        " tokens_cache_write, host_version)"
-        " VALUES('ses_child', 'p1', '/home/u/proj', 'general', 'model-x',"
-        " 'vendor', NULL, 1, 1700000500000, 1700000560000, 0.0, 500, 100, 0,"
-        " 30, 5, '2.0.32')")
-    conn.commit()
-    conn.close()
-
+def test_s_cycles_each_tabs_own_sort_order(tracker):
+    """`s` replaces the old auto-sync toggle: mode 0 is query order, then the
+    tab's declared fields, and the summary always names the order in force."""
     async def body(pilot, app):
-        await activate(app, pilot, "tab-agents")
-        table = app.screen.query_one("#t-agents", DataTable)
-        row = first_column(table).index("explore")
-        screen = await drill_tests.open_row(app, pilot, "#t-agents", row)
-        assert isinstance(screen, tui.HistoryScreen), app.screen_stack
-        await pilot.press("c")
-        await pilot.pause(0.6)
-        child = app.screen_stack[-1]
-        assert isinstance(child, tui.ChildSessionsScreen), app.screen_stack
-        table = child.query_one("#child-table", DataTable)
-        assert table.row_count == 1, table.row_count
-        assert "in 535" in str(child.query_one("#child-summary").content)  # 500+30+5
-    drive(lambda: tui.TrackerApp(str(tracker), clock=clock), body)
+        await activate(app, pilot, "tab-tools")
+        table = app.query_one("#t-tools", DataTable)
+        summary = app.query_one("#t-tools-summary")
+        assert "sort: tab order" in str(summary.content)
+        before = first_column(table)
+        # tab order -> calls -> recent -> name -> fails -> tab order
+        for expected in ("sort: calls", "sort: recent", "sort: name"):
+            await pilot.press("s")
+            await pilot.pause()
+            assert expected in str(summary.content)
+        assert first_column(table) == sorted(before, key=str.lower)
+        for expected in ("sort: fails", "sort: tab order"):
+            await pilot.press("s")
+            await pilot.pause()
+            assert expected in str(summary.content)
+    drive(lambda: tui.TrackerApp(str(tracker)), body)
+
+def test_a_live_filter_stays_visible_and_anchors_the_list_at_the_top(tracker):
+    """A narrowed list starts at its first match, not at a deep old cursor.
+
+    The filter row also stays visible after Enter: an applied filter the page
+    hides is the state that used to make the rows look wrong for no reason.
+    """
+    async def body(pilot, app):
+        await activate(app, pilot, "tab-tools")
+        table = app.query_one("#t-tools", DataTable)
+        inp = app.query_one("#filter")
+        assert table.row_count >= 4, table.row_count
+        table.move_cursor(row=table.row_count - 1)
+        await pilot.pause()
+        assert table.scroll_y > 0, (table.cursor_row, table.scroll_y)
+
+        await pilot.press("/")
+        await pilot.pause()
+        assert inp.display and inp.has_focus
+        for ch in "shell":
+            await pilot.press(ch)
+            await pilot.pause()
+        assert first_column(table) == ["shell"], first_column(table)
+        assert table.cursor_row == 0, table.cursor_row
+        assert table.scroll_y == 0, table.scroll_y
+        note = str(app.query_one("#t-tools-summary").content)
+        assert 'filter "shell"' in note and "1 of" in note, note
+
+        await pilot.press("enter")
+        await pilot.pause()
+        assert inp.display, "Enter hid a filter that is still applied"
+
+        await pilot.press("escape")
+        await pilot.pause()
+        assert not inp.display
+        assert table.row_count > 1, table.row_count
+    drive(lambda: tui.TrackerApp(str(tracker)), body, size=(120, 10))
+
+def test_the_main_screen_cannot_scroll_when_its_content_fits(tracker):
+    """qcut's layout guarantee: the page never slides into blank rows.
+
+    TabbedContent is constrained to `1fr`; without it the main screen measured
+    two rows taller than the terminal and scrolled even on a quiet database.
+    """
+    async def body(pilot, app):
+        from textual.widgets import TabbedContent
+        assert app.screen.max_scroll_y == 0, app.screen.max_scroll_y
+        assert app.query_one(TabbedContent).max_scroll_y == 0
+        await activate(app, pilot, "tab-usage")
+        assert app.screen.max_scroll_y == 0, app.screen.max_scroll_y
+    drive(lambda: tui.TrackerApp(str(tracker)), body, size=(120, 20))
+
+def test_a_pushed_detail_screen_carries_no_app_shortcuts(tracker):
+    """Only the keys the detail screen itself binds reach the footer."""
+    async def body(pilot, app):
+        await activate(app, pilot, "tab-tools")
+        app.push_screen(tui.HistoryScreen("tool", "bash"))
+        await pilot.pause()
+        bindings = app.screen.active_bindings
+        keys = set(bindings)
+        assert any(key in keys for key in ("q", "escape", "escape,q")), keys
+        leaked = [b.binding.action for b in bindings.values()
+                  if b.binding.action in tui.TrackerApp.APP_SHORTCUT_ACTIONS]
+        assert not leaked, leaked
+    drive(lambda: tui.TrackerApp(str(tracker)), body)
+
 
 # --- what the status bar is allowed to shout about -------------------------
 
-def test_the_status_line_separates_a_known_reason_from_a_new_one(tracker):
+def test_the_status_line_separates_a_known_reason_from_a_new_one(tracker,
+                                                                monkeypatch):
     """One total could not be read: it held a deadline and a format change both.
 
     `part_left_running` is this reader's own holdback deadline — a `tool` part the
@@ -1015,7 +1073,11 @@ def test_the_status_line_separates_a_known_reason_from_a_new_one(tracker):
     alarm exists for. A reason nothing here has been taught about must raise it, and
     must be named: the difference between "the format moved" and "a Tuesday" is the
     whole value of the line.
+
+    The launch sync is disabled here: its fixture host is deliberately absent, and
+    its failure would add a second, unrelated `!` to the line this case reads.
     """
+    monkeypatch.setattr(tui.TrackerApp, "_request_sync", lambda self: None)
     conn = sqlite3.connect(tracker)
     conn.execute("DELETE FROM unparsed")
     conn.execute("INSERT INTO unparsed(reason, count) VALUES('part_left_running', 3)")

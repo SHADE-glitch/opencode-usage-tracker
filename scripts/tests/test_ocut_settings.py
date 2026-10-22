@@ -82,17 +82,15 @@ def test_environment_beats_the_file_and_the_file_beats_the_default(tmp_path, no_
     no_env.setenv("OCUT_TOP_N", "7")
     assert db.load_config(path)["top_n"] == 7, "the environment did not win"
     # Keys neither source mentions keep their default.
-    assert db.load_config(path)["sync_secs"] == db.DEFAULTS["sync_secs"]
+    assert db.load_config(path)["name_cap"] == db.DEFAULTS["name_cap"]
 
 
 @pytest.mark.parametrize("env,value,expect", [
     ("OCUT_TOP_N", "9", 9),
     ("OCUT_NAME_CAP", "33", 33),
-    ("OCUT_REFRESH_SECS", "2.5", 2.5),
-    ("OCUT_SYNC_SECS", "45", 45),
 ])
 def test_an_environment_value_is_parsed_as_a_number(tmp_path, no_env, env, value, expect):
-    """int first, then float: `2.5` is a period, `0.5` is the floor, not a typo."""
+    """A number from the environment keeps its declared type."""
     no_env.setenv(env, value)
     key = next(k for k, v in db.ENV_NAMES.items() if v == env)
     got = db.load_config(tmp_path / "absent.toml")[key]
@@ -121,7 +119,7 @@ def test_every_key_is_bounded_on_both_sides_and_says_so(key, no_env):
     ("top_n", True),        # a bool is an int subclass: `true` must not become 1
     ("top_n", "5"),         # a string of digits is not a number in a parsed file
     ("top_n", 2.5),        # an int key does not take a fraction
-    ("refresh_secs", "fast"),
+    ("log_limit", "fast"),
     ("name_cap", 1.5),
 ])
 def test_a_value_of_the_wrong_type_is_rejected_not_coerced(key, bad):
@@ -203,17 +201,13 @@ def test_the_defaults_are_the_constants_the_interface_shipped_with():
 
 
 def test_every_setting_reaches_the_interface_and_not_just_the_dict(tracker, no_env):
-    cfg = dict(db.DEFAULTS, top_n=2, log_limit=33, detail_limit=44, name_cap=15,
-               refresh_secs=7, sync_secs=11)
+    cfg = dict(db.DEFAULTS, top_n=2, log_limit=33, detail_limit=44, name_cap=15)
 
     async def body(pilot, app):
         assert app.DASH_TOP == 2, app.DASH_TOP
         assert app.USAGE_LOG_LIMIT == 33, app.USAGE_LOG_LIMIT
         assert app.DETAIL_LIMIT == 44, app.DETAIL_LIMIT
         assert app.name_cap == 15, app.name_cap
-        periods = sorted(t._interval for t in app._timers)
-        assert 7 in periods or 7.0 in periods, periods
-        assert 11 in periods or 11.0 in periods, periods
 
         # The cap is spent on a real cell at a narrow width, and the number a
         # pushed screen reports is the configured one, not the class default.
@@ -234,14 +228,27 @@ def test_every_setting_reaches_the_interface_and_not_just_the_dict(tracker, no_e
                     size=(52, 40))
 
 
-def test_the_shipped_timers_are_the_configured_periods(tracker, no_env):
-    """No config passed: the app falls back to `DEFAULTS`, so the timers must be
-    the documented 5s and 30s — the fallback is the same layer, not a second one."""
+def test_the_tui_syncs_once_on_launch_and_keeps_no_background_timer(
+        tracker, no_env, monkeypatch):
+    """The screen is event-driven: one launch sync, no 5s/30s timers.
+
+    New rows arrive through `r` or by reopening the TUI. A background timer that
+    redraws a page while it is being read is the behaviour this case exists to
+    keep out.
+    """
+    calls = []
+
+    def fake_request_sync(app):
+        calls.append(app)
+
+    monkeypatch.setattr(tui.TrackerApp, "_request_sync", fake_request_sync)
+
     async def body(pilot, app):
-        periods = sorted(t._interval for t in app._timers)
-        assert db.DEFAULTS["refresh_secs"] in periods, periods
-        assert db.DEFAULTS["sync_secs"] in periods, periods
+        assert calls == [app], calls
+        assert not any(t._interval in (5, 5.0, 30, 30.0) for t in app._timers), \
+            [(t._interval, t) for t in app._timers]
         assert app.name_cap == db.DEFAULTS["name_cap"], app.name_cap
+
     tui_tests.drive(lambda: tui.TrackerApp(str(tracker)), body)
 
 

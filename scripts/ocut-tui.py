@@ -212,30 +212,31 @@ def _usage_total_tokens(prompt, completion, cache_read, cache_write):
 # because a preset is one click and a custom span needs a calendar — folding them
 # into one menu made every preset two clicks and hid which one was active.
 RANGE_OPTIONS = [(db.USAGE_RANGE_LABELS[k], k)
-                 for k in ("1d", "2d", "3d", "7d", "30d", "all")] + [
+                 for k in ("1d", "2d", "3d", "7d", "14d", "30d", "all")] + [
     ("Custom…", "custom")]
 CUSTOM_RANGE = "custom"
 
-# The Requests page is a single request log, one row per model step. The cache
+# The Usage page is a single request log, one row per model step. The cache
 # vocabulary is CodeBuddy's, mapped onto OpenCode's fields — its uncached
 # `prompt_tokens` is the cache miss, `cache_read` the hit, `cache_write` the write
 # (see `_input_tokens`). `Project` and `Agent` are OpenCode's own fields: they
 # answer "where was this spent" and "which mode spent it", which a request log that
 # only names the model cannot.
-# Metrics first, context later. The plan keeps a prefix, so the order is the
-# narrow-terminal priority: the token/cost columns must survive even when the
-# project and agent have to drop. `Time` and `Model` are the row's identity —
-# the plan protects those two columns — and the provider and raw cache counts
-# remain one keypress away on the call's detail screen.
-USAGE_COLUMNS = ("Time", "Model", "Usage Total", "Input", "Output", "API Total",
-                 "Cost", "Cache hit rate", "Project", "Agent", "Provider",
-                 "Cache hit", "Cache miss", "Cache write")
+# Metrics first, context later, in the family's order: `Time`, `Model`,
+# `Provider`, then the measure family, and only then the context columns. Cost
+# takes the slot Credits holds on the sibling trackers — OpenCode prices every
+# step, so the money is real. The plan keeps a prefix, so a narrow terminal drops
+# `Agent` and `Project` before it drops a measurement.
+USAGE_COLUMNS = ("Time", "Model", "Provider", "Usage Total", "Cost", "Input",
+                 "Output", "API Total", "Cache hit", "Cache miss",
+                 "Cache write", "Cache hit rate", "Project", "Agent")
 
-# Models-tab column order. Share and Hit rate are derived from the row's own
-# numbers; the cache counts stay so a reader can see what the rate was made of.
-TOKEN_COLUMNS = ("Model", "Provider", "Requests", "Usage Total", "Share",
-                 "Input", "Output", "API Total", "Cost", "Cache hit rate",
-                 "Cache hit", "Cache miss", "Cache write")
+# Tokens-tab column order mirrors the family: the measure family leads, and the
+# page's own `Share` sits last, where it can drop without taking a measurement
+# with it. The cache counts stay so a reader can see what the rate was made of.
+TOKEN_COLUMNS = ("Model", "Provider", "Usage Total", "Cost", "Requests",
+                 "Input", "Output", "API Total", "Cache hit", "Cache miss",
+                 "Cache write", "Cache hit rate", "Share")
 
 # Entity tabs and the two detail screens. Declared here rather than inline at
 # `add_columns` because the column plan needs the full list to compute a prefix from,
@@ -248,11 +249,12 @@ TOKEN_COLUMNS = ("Model", "Provider", "Requests", "Usage Total", "Share",
 _STATE = db.ENTITY_STATE_COLUMN
 # ``run`` is every state that has not finished (`running` and `streaming`), so
 # calls = ok + fail + run. `category` separates a builtin from an MCP tool without
-# sending the reader to another tab; the state column is gone from this table
-# because the host has no census of builtin tools, so it read "not reported" on
-# every row that mattered.
-TOOLS_COLUMNS = ("tool", "category", "calls", "ok", "fail", "run", "avg",
-                 "last used")
+# sending the reader to another tab, but it sits last: the family's table leads
+# with the counts, and the prefix plan drops context before measurements. The
+# state column is gone from this table because the host has no census of builtin
+# tools, so it read "not reported" on every row that mattered.
+TOOLS_COLUMNS = ("tool", "calls", "ok", "fail", "run", "avg", "last used",
+                 "category")
 # Skills keep `state`: `inventory` is a real census, so installed/removed means
 # something here. Failures and average duration answer the same questions Tools
 # does, and were already in the query.
@@ -281,13 +283,10 @@ PLUGIN_HISTORY_COLUMNS = ("when", "kind", "item", "status", "duration",
 # table used to sit past the right edge with no key that would bring it back.
 RESPONSE_COLUMNS = ("when", "model", "prompt", "completion", "total", "cost",
                     "cache read", "cache write", "usage", "message_id")
-
-# The Agents drill-down's second screen: the child sessions one agent type's
-# task calls spawned. OpenCode records each subagent run as its own session
-# (parent_id, is_subagent) and links it from the call — evidence no other tab
-# can show, and one of the fields that has no CodeBuddy counterpart.
-CHILD_COLUMNS = ("started", "dur", "agent", "model", "in", "out", "reason",
-                 "cache hit", "dir")
+# The Dashboard board is a cost summary, not a session log: sessions sit after
+# the money so the longest paths cannot push `last used` under the scrollbar.
+PROJECT_COLUMNS = ("project", "requests", "usage total", "cost", "sessions",
+                   "last used")
 
 
 # --- entity-panel registry -------------------------------------------------
@@ -323,7 +322,7 @@ class EntityTab(NamedTuple):
     # pair, and the same row key shape cannot open both screens.
     key_kind: str = ""
     # False: default to rows with a call in the window; `a` shows the full union.
-    # Plugins and Models are always full: their list *is* the inventory/usage set,
+    # Plugins and Tokens are always full: their list *is* the inventory/usage set,
     # and hiding a 0-use plugin or a zero-token answering model loses the answer.
     always_all: bool = False
     # The raw row key whose value is this tab's windowed count, for the boundary
@@ -340,9 +339,9 @@ def _tool_row(r, kind):
     # `run` includes every unfinished state. `category` is the host's own
     # builtin/skill/agent/mcp classification; an installed row with no call has
     # none, and renders "-" rather than inventing one.
-    return [r["tool_name"], r["category"] or "-", f"{r['calls']:,}",
-            f"{r['completed']:,}", f"{r['errored']:,}", f"{r['running']:,}",
-            ms(r["avg_ms"]), ts(r["last_used"])]
+    return [r["tool_name"], f"{r['calls']:,}", f"{r['completed']:,}",
+            f"{r['errored']:,}", f"{r['running']:,}", ms(r["avg_ms"]),
+            ts(r["last_used"]), r["category"] or "-"]
 
 
 def _skill_row(r, kind):
@@ -379,26 +378,26 @@ def _mcp_tool_row(r, kind):
 
 
 def _token_row(r, kind):
-    """One Models row. API Total is the host's step total; Usage Total is the
+    """One Tokens row. API Total is the host's step total; Usage Total is the
     display-only cache-hit re-add, and the three cache columns are CodeBuddy's
     hit/miss/write mapped onto OpenCode's read/input/write."""
     hit = db.cache_hit_rate(r["cache_read"], r["prompt_tokens"],
                             r["cache_write"])
     share = r["share_pct"] if "share_pct" in r.keys() else None
     return [r["model"], db.provider_label(r["provider"]),
-            f"{r['responses']:,}",
             fmt_n(_usage_total_tokens(r["prompt_tokens"],
                                       r["completion_tokens"],
                                       r["cache_read"], r["cache_write"])),
-            "-" if share is None else f"{share:.1f}%",
+            fmt_cost(r["cost"]), f"{r['responses']:,}",
             fmt_n(_input_tokens(r["prompt_tokens"], r["cache_read"],
                                 r["cache_write"])),
             fmt_n(r["completion_tokens"]),
-            fmt_n(r["total_tokens"]), fmt_cost(r["cost"]),
-            "-" if hit is None else f"{hit * 100:.1f}%",
+            fmt_n(r["total_tokens"]),
             fmt_n(r["cache_read"]),
             fmt_n(r["prompt_tokens"]),
-            fmt_n(r["cache_write"])]
+            fmt_n(r["cache_write"]),
+            "-" if hit is None else f"{hit * 100:.1f}%",
+            "-" if share is None else f"{share:.1f}%"]
 
 
 ENTITY_TABS = (
@@ -411,15 +410,17 @@ ENTITY_TABS = (
     EntityTab("tab-agents", "Agents", "t-agents", "colnote-agents",
               AGENTS_COLUMNS, "q_agents", _agent_row, "No agents used yet",
               "agent", name_key="agent_type"),
-    EntityTab("tab-mcp", "MCP", "t-mcp", "colnote-mcp", MCP_COLUMNS,
-              "q_mcp_servers", _mcp_server_row, "No MCP servers", "mcp",
-              key_kind="mcp_server", name_key="server"),
+    # Plugins before MCP, as in the sibling trackers: the tab strip is a family
+    # contract, and only the data behind each slot is this project's own.
     EntityTab("tab-plugins", "Plugins", "t-plugins", "colnote-plugins",
               PLUGINS_COLUMNS, "q_plugins", _plugin_row, "No plugins installed",
               "plugin", always_all=True, count_key="uses", name_key="plugin",
               sort_fields=(("uses", "uses", True), ("recent", "last_used", True),
                            ("name", None, False))),
-    EntityTab("tab-tokens", "Models", "t-tokens", "colnote-tokens",
+    EntityTab("tab-mcp", "MCP", "t-mcp", "colnote-mcp", MCP_COLUMNS,
+              "q_mcp_servers", _mcp_server_row, "No MCP servers", "mcp",
+              key_kind="mcp_server", name_key="server"),
+    EntityTab("tab-tokens", "Tokens", "t-tokens", "colnote-tokens",
               TOKEN_COLUMNS, "q_model_tokens", _token_row,
               "No model responses yet", "model", key_index=(0, 1),
               key_columns=("model", "provider"), always_all=True,
@@ -1019,7 +1020,7 @@ if HAVE_TEXTUAL:
     class WideTableMixin:
         """The narrow-terminal column plan, shared by every host that owns a table.
 
-        A rule that covers two of the nine tables is not a rule, so the mechanism
+        A rule that covers two of the eleven tables is not a rule, so the mechanism
         lives here and each host declares its own ``WIDE_TABLES``. ``_wide_rows`` is
         created by each host's ``__init__`` — it must not be a class attribute, or two
         open screens would share one row cache.
@@ -1277,8 +1278,7 @@ if HAVE_TEXTUAL:
         table lists the calls. Selecting a call pushes its full detail.
         """
 
-        BINDINGS = [Binding("escape,q", "app.pop_screen", "Back"),
-                    Binding("c", "child_sessions", "Child sessions")]
+        BINDINGS = [Binding("escape,q", "app.pop_screen", "Back")]
         # A pushed screen spans the terminal, so its table loses no cells to its
         # surroundings — measured: region width == terminal width at 60/80/100.
         WIDE_TABLES = {"hist-table": (HISTORY_COLUMNS, "colnote-hist", 0)}
@@ -1367,15 +1367,6 @@ if HAVE_TEXTUAL:
                  else "No calls recorded for this name"),
                 key_index=(0, 1), key_kind="call", key_rows=keys)
 
-        def action_child_sessions(self) -> None:
-            # Only an agent's call list has child sessions behind it; on every
-            # other kind the binding is a no-op rather than a second binding
-            # table per kind.
-            if self.kind != "agent":
-                return
-            self.app.push_screen(ChildSessionsScreen(
-                self.entity, display=self.heading, start_ts=self.start_ts,
-                end_ts=self.end_ts, window_label=self.window_label))
         def _summary_line(self, s) -> str:
             """One line of the entity's windowed counts, for the header."""
             if self.kind == "plugin":
@@ -1484,78 +1475,6 @@ if HAVE_TEXTUAL:
                     f"{fmt_n(s['cache_read'])}/{fmt_n(s['cache_write'])} · "
                     f"{self.window_label}")
 
-    class ChildSessionsScreen(WideTableMixin, Screen):
-        """The child sessions one agent type spawned, pushed from its history.
-
-        OpenCode bills the parent for a child's steps, so the child rows carry
-        no cost — the token rollup is the evidence. A plain read of one agent's
-        call list cannot answer "what did the subagents actually do", which is
-        why this is a screen of its own and not a column on the call list.
-        """
-
-        BINDINGS = [Binding("escape,q", "app.pop_screen", "Back")]
-        WIDE_TABLES = {"child-table": (CHILD_COLUMNS, "colnote-child", 0)}
-
-        @property
-        def name_cap(self) -> int:
-            return self.app.name_cap
-
-        def __init__(self, agent_type: str, display: str | None = None,
-                     start_ts=None, end_ts=None, window_label: str = "all time"):
-            super().__init__()
-            self.agent_type = agent_type
-            self.heading = display or agent_type
-            self.start_ts = start_ts
-            self.end_ts = end_ts
-            self.window_label = window_label
-            self._wide_rows = {}
-
-        def compose(self) -> ComposeResult:
-            yield TopBar(f"child sessions · {self.heading}")
-            yield Vertical(
-                Static(f"[b]child sessions[/b] · {self.heading}",
-                       id="child-title"),
-                Static(id="child-summary", classes="entity-summary"),
-                Static(id="colnote-child", classes="col-note"),
-                DataTable(id="child-table", zebra_stripes=True),
-            )
-            yield Footer()
-
-        def on_mount(self) -> None:
-            self.title = f"child sessions: {self.heading}"
-            self.query_one("#child-table", DataTable).cursor_type = "row"
-            conn = db.open_db(self.app.db_path, readonly=True)
-            try:
-                found = db.q_child_sessions(
-                    conn, self.agent_type, self.app.DETAIL_LIMIT,
-                    start_ts=self.start_ts, end_ts=self.end_ts)
-                rows = [[ts(r["started_at"]), ms(r["duration_ms"]),
-                         r["agent"] or "-", r["model"] or "-",
-                         fmt_n((r["tokens_input"] or 0)
-                               + (r["tokens_cache_read"] or 0)
-                               + (r["tokens_cache_write"] or 0)),
-                         fmt_n(r["tokens_output"]),
-                         fmt_n(r["tokens_reasoning"]),
-                         fmt_n(r["tokens_cache_read"]),
-                         (Path(r["directory"]).name if r["directory"] else "-")]
-                        for r in found]
-                # `in` is the full prompt (uncached + hit + write), the same
-                # definition the row cells and the Tokens pages use.
-                inp = sum((r["tokens_input"] or 0) + (r["tokens_cache_read"] or 0)
-                          + (r["tokens_cache_write"] or 0) for r in found)
-                out = sum((r["tokens_output"] or 0) for r in found)
-            finally:
-                conn.close()
-            if not found:
-                summary = f"no child sessions · {self.window_label}"
-            else:
-                summary = (f"{count_n(len(found), 'child session')} · "
-                           f"in {fmt_n(inp)} · out {fmt_n(out)} · "
-                           f"{self.window_label}")
-            self.query_one("#child-summary", Static).update(summary)
-            self._fill_wide("child-table", rows,
-                            "No child sessions recorded for this agent")
-
     class McpServerScreen(WideTableMixin, Screen):
         """The tools one MCP server was called with, then the calls of one tool.
 
@@ -1662,6 +1581,7 @@ if HAVE_TEXTUAL:
     class TrackerApp(WideTableMixin, App):
         CSS = """
         #hist-title, #resp-title, #call-title { padding: 1 2; }
+        TabbedContent { height: 1fr; }
         DataTable { height: 1fr; }
         #status { padding: 0 2; color: $text-muted; }
         /* The drill-down header (counts) and the single-call detail. The summary
@@ -1684,7 +1604,9 @@ if HAVE_TEXTUAL:
             height: auto;
         }
         #panel-dash-cache, #panel-dash-tools,
-        #panel-dash-activity, #panel-dash-modes { margin: 0; }
+        #panel-dash-activity, #panel-dash-projects { margin: 0; }
+        #panel-dash-projects { height: auto; }
+        #dash-projects { height: 9; }
         .panel-title { text-style: bold; color: $accent; }
         /* Requests is one table with a compact two-line header. The old four
            bordered panels consumed 40% of a short terminal and then clipped their
@@ -1708,13 +1630,15 @@ if HAVE_TEXTUAL:
            clips every panel after its first few lines. */
         .dash-row.two-col .usage-panel { height: 100%; }
         /* Two columns leave the third panel of a three-panel row alone beside a
-           hole. Cache and Top modes span both instead, which reads as a summary
+           hole. Cache and Projects span both instead, which reads as a summary
            strip rather than a layout accident. */
         .dash-row.compact #panel-dash-cache,
-        .dash-row.compact #panel-dash-modes { column-span: 2; }
+        .dash-row.compact #panel-dash-projects { column-span: 2; }
         .dash-row { height: auto; margin: 0 0 1 0; }
         /* A filter row exists only while it is in use; a permanent search box
-           spends a row on every page for a control most visits never touch. */
+           spends a row on every page for a control most visits never touch.
+           Once a tab has a filter, the row stays visible so the filter is never
+           silently applied from a bar the user cannot see. */
         #filter { display: none; height: 1; border: none; padding: 0 2;
                   background: $boost; color: $foreground; }
         """
@@ -1725,17 +1649,16 @@ if HAVE_TEXTUAL:
         INITIAL_TAB = "tab-dashboard"
         BINDINGS = [
             Binding("q", "quit", "Quit"),
-            Binding("r", "refresh", "Refresh"),
-            Binding("s", "toggle_auto_sync", "Auto sync"),
+            Binding("r", "refresh", "Sync now"),
+            Binding("s", "cycle_sort", "Sort"),
             Binding("a", "toggle_all", "All rows"),
-            Binding("o", "cycle_sort", "Sort"),
             Binding("slash", "focus_filter", "Filter"),
             Binding("d", "date_range", "Date"),
             Binding("escape", "clear_filter", "Clear filter", show=False),
             Binding("tab", "next_tab", "Next tab", priority=True),
             Binding("shift+tab", "previous_tab", "Prev tab", priority=True),
         ]
-        TITLE = "OpenCode usage tracker"
+        TITLE = "OpenCode CLI usage tracker"
         # No built-in Header means no ctrl+p palette; disable it outright too.
         ENABLE_COMMAND_PALETTE = False
 
@@ -1770,7 +1693,6 @@ if HAVE_TEXTUAL:
             # so without a pin a `now - 1h` fixture falls out of a Today window
             # when the suite runs in the first hour after local midnight.
             self._clock = clock or time.time
-            self._auto_sync = True
             self._sync_running = False
             self._sync_pending = False
             self.sync_mod = None
@@ -1784,11 +1706,9 @@ if HAVE_TEXTUAL:
                 **{tab.pane: tab.default_range for tab in ENTITY_TABS},
                 "tab-usage": "1d",
             }
-            self._last_refresh = None      # epoch ms
-            self._last_sync = None         # epoch ms
             self._usage_ready = False
             # Per entity tab: the default is "used in this window"; `a` flips to
-            # the full installed ∪ history union. Plugins/Models opt out because
+            # the full installed ∪ history union. Plugins/Tokens opt out because
             # their full set is the answer, not the noise.
             self._show_all = {}
             # Per tab sort mode: 0 is the query's own order, then the tab's
@@ -1823,6 +1743,12 @@ if HAVE_TEXTUAL:
         def compose(self) -> ComposeResult:
             yield TopBar(self.TITLE, with_range=True,
                          range_value=self.tab_range[self.INITIAL_TAB], id="topbar")
+            # The filter sits under the title bar, the same place it occupies on
+            # the sibling trackers. It is shown while the active tab has a filter
+            # and hidden when it does not (CSS), so an active filter cannot become
+            # invisible state.
+            yield Input(placeholder="filter rows — Enter keeps, Esc clears",
+                        id="filter")
             with TabbedContent(initial=self.INITIAL_TAB):
                 with TabPane("Dashboard", id="tab-dashboard"):
                     yield Vertical(
@@ -1830,6 +1756,10 @@ if HAVE_TEXTUAL:
                         Horizontal(
                             Vertical(
                                 Static("Usage", classes="panel-title"),
+                                Static(id="dash-sum-requests"),
+                                Static(id="dash-sum-cost"),
+                                Static(id="dash-sum-sessions"),
+                                Static(id="dash-sum-projects"),
                                 Static(id="dash-kpi-tools"),
                                 Static(id="dash-kpi-skills"),
                                 Static(id="dash-kpi-agents"),
@@ -1839,13 +1769,11 @@ if HAVE_TEXTUAL:
                             ),
                             Vertical(
                                 Static("Tokens", classes="panel-title"),
-                                Static(id="dash-tok-requests"),
+                                Static(id="dash-tok-usage"),
                                 Static(id="dash-tok-input"),
                                 Static(id="dash-tok-output"),
                                 Static(id="dash-tok-api"),
-                                Static(id="dash-tok-usage"),
                                 Static(id="dash-tok-hit-rate"),
-                                Static(id="dash-tok-cost"),
                                 classes="usage-panel", id="panel-dash-tokens",
                             ),
                             Vertical(
@@ -1869,14 +1797,6 @@ if HAVE_TEXTUAL:
                                 Static(id="dash-tools"),
                                 classes="usage-panel", id="panel-dash-tools",
                             ),
-                            Vertical(
-                                # OpenCode records which agent ran each step;
-                                # CodeBuddy has no such field, so this panel is
-                                # one of the deliberate divergences.
-                                Static("Top modes", classes="panel-title"),
-                                Static(id="dash-modes"),
-                                classes="usage-panel", id="panel-dash-modes",
-                            ),
                             classes="dash-row", id="dash-row-2",
                         ),
                         # Row 3: runtime health + the per-day trend.
@@ -1888,22 +1808,35 @@ if HAVE_TEXTUAL:
                                 Static(id="dash-rt-running"),
                                 Static(id="dash-rt-avg"),
                                 Static(id="dash-rt-sessions"),
-                                Static(id="dash-rt-subagents"),
                                 Static(id="dash-rt-projects"),
+                                Static(id="dash-rt-subagents"),
                                 classes="usage-panel", id="panel-dash-runtime",
                             ),
                             Vertical(
-                                Static("Calls / cost per day", id="dash-activity-title",
+                                Static("Calls per day", id="dash-activity-title",
                                        classes="panel-title"),
                                 Static(id="dash-activity"),
                                 Static(id="dash-activity-axis"),
                                 # OpenCode prices each step, so cost has its own
-                                # series over the same local days.
+                                # series over the same local days. Its axis names
+                                # the money; the panel title names the calls.
                                 Static(id="dash-cost"),
                                 Static(id="dash-cost-axis"),
                                 classes="usage-panel", id="panel-dash-activity",
                             ),
                             classes="dash-row", id="dash-row-3",
+                        ),
+                        Horizontal(
+                            Vertical(
+                                Static("Projects", classes="panel-title"),
+                                Static("", id="colnote-projects",
+                                       classes="colnote"),
+                                DataTable(id="dash-projects",
+                                          zebra_stripes=True),
+                                classes="usage-panel",
+                                id="panel-dash-projects",
+                            ),
+                            classes="dash-row", id="dash-row-4",
                         ),
                         Static(id="dash-note"),
                         id="dash-box",
@@ -1914,7 +1847,7 @@ if HAVE_TEXTUAL:
                                      classes="entity-summary")
                         yield Static(id=tab.note_id, classes="col-note")
                         yield DataTable(id=tab.table_id, zebra_stripes=True)
-                with TabPane("Requests", id="tab-usage"):
+                with TabPane("Usage", id="tab-usage"):
                     yield Vertical(
                         Static(id="usage-window", classes="usage-window-line"),
                         Static(id="usage-summary", classes="usage-summary-line"),
@@ -1923,9 +1856,6 @@ if HAVE_TEXTUAL:
                         DataTable(id="t-usage", zebra_stripes=True),
                         id="usage-box",
                     )
-            # Shown only while searching (`/`). One row, above the status line,
-            # rather than a permanent search box that costs every page a row.
-            yield Input(placeholder="Filter this tab…", id="filter")
             yield Static("", id="status")
             yield Footer()
 
@@ -1948,12 +1878,12 @@ if HAVE_TEXTUAL:
             # its own; without one the date button held focus and Enter opened the
             # picker while a table row looked selected.
             self.query_one("#dash-box").can_focus = True
-            # Auto sync (incremental, ~30s) + UI refresh (~5s). Both are timers,
-            # not subprocesses; the sync runs in a worker thread (see _do_sync).
-            self.set_interval(self.config["sync_secs"], self._auto_sync_tick)
-            self.set_interval(self.config["refresh_secs"], self._auto_refresh_tick)
             self.refresh_data()
             self._focus_active()
+            # One incremental sync on launch, then the screen stays still. New
+            # rows arrive only through `r` or by reopening the TUI — no background
+            # timer redraws a page the user is reading.
+            self._request_sync()
 
         # --- tab cycling (uses the real TabbedContent.active API) -----------
 
@@ -1980,33 +1910,38 @@ if HAVE_TEXTUAL:
 
         FILTERABLE_PANES = frozenset(
             ["tab-usage"] + [tab.pane for tab in ENTITY_TABS])
+        APP_SHORTCUT_ACTIONS = frozenset({
+            "quit", "refresh", "cycle_sort", "toggle_all", "focus_filter",
+            "clear_filter", "date_range", "next_tab", "previous_tab",
+        })
 
         def check_action(self, action: str, parameters) -> bool | None:
             """Hide a key in the footer where pressing it could only do nothing.
 
-            The footer is the app's whole key surface, and it used to advertise
-            `a: All rows` on the Dashboard and Models — pages where no expansion
-            exists. ``check_action`` is Textual's own hook for that: returning
-            False disables the binding for this frame and removes it from the
-            footer, instead of leaving a dead key next to the live ones.
+            The footer is the app's whole key surface. ``check_action`` is
+            Textual's own hook: returning False disables the binding for this
+            frame and removes it from the footer, instead of leaving a dead key
+            next to the live ones. A pushed detail screen owns every key it
+            needs (back), so no app-level shortcut is carried into it.
             """
+            if len(self.screen_stack) > 1:
+                # A pushed screen owns its keys. Disable this app's own
+                # shortcuts, but leave the screen's `app.pop_screen` and its
+                # context actions (agent `c`) alive — a blanket False here
+                # removed Back from the footer and the keyboard.
+                return action not in self.APP_SHORTCUT_ACTIONS
+            pane = self._active_pane()
             if action in ("next_tab", "previous_tab", "date_range"):
-                return len(self.screen_stack) <= 1
-            if action in ("toggle_all", "cycle_sort", "focus_filter"):
-                if len(self.screen_stack) > 1:
-                    return False
-                try:
-                    pane = self._active_pane()
-                except Exception:
-                    return True
-                if action == "toggle_all":
-                    tab = ENTITY_BY_PANE.get(pane)
-                    return bool(tab and not tab.always_all)
-                if action == "cycle_sort":
-                    return bool(self._sort_fields_for(pane))
+                return True
+            if action == "toggle_all":
+                tab = ENTITY_BY_PANE.get(pane)
+                return bool(tab and not tab.always_all)
+            if action == "cycle_sort":
+                return bool(self._sort_fields_for(pane))
+            if action in ("focus_filter", "clear_filter"):
                 return pane in self.FILTERABLE_PANES
             # `None` would mean "disabled but visible" — every action not named
-            # above must stay enabled, including screen back and refresh.
+            # above must stay enabled, including refresh and quit.
             return True
 
         def _focus_active(self) -> None:
@@ -2044,9 +1979,33 @@ if HAVE_TEXTUAL:
             self._loading_filter = True
             inp.value = value
             self._loading_filter = False
-            show = bool(value)
-            inp.display = show
-            self._filter_open = show
+            inp.display = bool(value)
+
+        def _anchor_active_table_top(self) -> None:
+            """Show the first row after a filter edit.
+
+            ``_fill`` remembers the cursor by row key, which is what keeps a
+            sort or a refresh from moving the highlight. Under a live filter the
+            same rule pins a deep row while the list narrows around it, so the
+            table appears to scroll by itself and the first matches stay off
+            screen. A filter change is the one moment the highlight should start
+            at the top.
+            """
+            pane = self._active_pane()
+            if pane == "tab-usage":
+                table_id = "t-usage"
+            else:
+                tab = ENTITY_BY_PANE.get(pane)
+                table_id = tab.table_id if tab else None
+            if table_id is None:
+                return
+            try:
+                table = self.query_one(f"#{table_id}", DataTable)
+            except Exception:
+                return
+            if table.row_count:
+                table.move_cursor(row=0)
+                table.scroll_home(animate=False)
 
         def action_focus_filter(self) -> None:
             if len(self.screen_stack) > 1:
@@ -2055,13 +2014,13 @@ if HAVE_TEXTUAL:
             if pane not in self.FILTERABLE_PANES:
                 return
             inp = self.query_one("#filter", Input)
-            self._filter_open = True
             inp.display = True
             self._loading_filter = True
             inp.value = self._tab_filters.get(pane, "")
             self._loading_filter = False
             inp.focus()
             inp.cursor_position = len(inp.value)
+            self.call_after_refresh(self._anchor_active_table_top)
 
         def action_clear_filter(self) -> None:
             pane = self._active_pane()
@@ -2075,10 +2034,10 @@ if HAVE_TEXTUAL:
             inp.value = ""
             self._loading_filter = False
             inp.display = False
-            self._filter_open = False
             self._tab_filters[pane] = ""
             self._refresh_active_tab()
             self._focus_active()
+            self.call_after_refresh(self._anchor_active_table_top)
 
         def action_toggle_all(self) -> None:
             if len(self.screen_stack) > 1:
@@ -2115,14 +2074,16 @@ if HAVE_TEXTUAL:
             if pane not in self.FILTERABLE_PANES:
                 return
             self._tab_filters[pane] = event.value.strip()
-            self._filter_open = True
             self._refresh_active_tab()
+            self.call_after_refresh(self._anchor_active_table_top)
 
         def on_input_submitted(self, event: Input.Submitted) -> None:
             if event.input.id != "filter":
                 return
-            event.input.display = False
-            self._filter_open = False
+            # Enter hands the keys back to the table but keeps the bar visible:
+            # an applied filter is state the page must keep showing.
+            event.input.display = bool(self._tab_filters.get(
+                self._active_pane(), "").strip())
             self._focus_active()
 
         # --- data fill / refresh --------------------------------------------
@@ -2176,16 +2137,24 @@ if HAVE_TEXTUAL:
             return any(query in _plain(cell).lower() for cell in cells)
 
         def _render_entity_summary(self, tab, found, used, visible, shown):
-            noun = {"tool": "tools", "skill": "skills", "agent": "agents",
-                    "plugin": "plugins", "mcp": "servers", "model": "models"}
+            """One line above the table, in the family's grammar.
+
+            `count · [installed/unused] · [base] · sort` — the same shape as the
+            sibling trackers. The window is the top bar's job now, so it is not
+            repeated here; the sort is always named because a silent reorder is
+            indistinguishable from data that changed.
+            """
+            noun = {"tool": "tool", "skill": "skill", "agent": "agent",
+                    "plugin": "plugin", "mcp": "server", "model": "model"}
+            count = noun.get(tab.kind, "row")
             parts = []
             query = self._tab_filters.get(tab.pane, "").strip()
+            show_all = self._show_all.get(tab.pane, tab.always_all)
+            scope = len(found) if show_all else len(used)
             if query:
-                parts.append(f"{shown:,} match “{query}”")
-            if tab.kind == "model":
-                parts.append(f"{len(used):,} models answered")
+                parts.append(f'filter "{query}" · {shown:,} of {scope:,}')
             else:
-                parts.append(f"{len(used):,} {noun.get(tab.kind, 'rows')} used")
+                parts.append(count_n(scope, count))
             if tab.kind in ("skill", "mcp", "plugin"):
                 installed = sum(1 for r in found if r["installed"])
                 parts.append(f"{installed:,} installed")
@@ -2195,16 +2164,14 @@ if HAVE_TEXTUAL:
                 if unused:
                     parts.append(f"{unused:,} unused in this window")
             if not tab.always_all:
-                if self._show_all.get(tab.pane, False):
-                    parts.append(f"a: used only ({len(used):,})")
-                elif len(found) > len(used):
-                    parts.append(f"a: show all {len(found):,}")
-            parts.append(f"sort: {self._sort_label(tab.pane)}")
+                if show_all:
+                    parts.append("incl. installed-unused")
+                elif scope != len(found):
+                    parts.append(f"{count_n(len(found) - scope, count)}"
+                                 " unused hidden — press a")
             if tab.kind == "plugin":
                 parts.append("uses come from the hook only")
-            label = db.window_label(self._range_of(tab.pane))
-            if label:
-                parts.append(label)
+            parts.append(f"sort: {self._sort_label(tab.pane)}")
             text = " · ".join(parts)
             try:
                 self.query_one(f"#{tab.table_id}-summary", Static).update(text)
@@ -2255,7 +2222,7 @@ if HAVE_TEXTUAL:
                              for c in tab.key_columns] for row, _ in items]
             empty = tab.empty
             if query:
-                empty = f"No {tab.title.lower()} match “{query}”"
+                empty = f'No {tab.title.lower()} match "{query}"'
             elif not show_all and found:
                 empty = (f"No {tab.title.lower()} used in this window — "
                          f"a: show all {len(found):,}")
@@ -2345,8 +2312,6 @@ if HAVE_TEXTUAL:
                 f"{count_n(o['model_calls'], 'model response')} · "
                 f"last {ts(o['last_ts'])}"
             )
-            if not self._auto_sync:
-                status += " · auto-sync OFF"
             if o["unparsed_records"]:
                 # Keep the status line honest: panels showing 0 while records went
                 # unclaimed means the format moved, not that usage stopped. The "!"
@@ -2379,7 +2344,7 @@ if HAVE_TEXTUAL:
             self._set_status(self._status_line())
 
         def _refresh_active_tab(self, conn=None) -> None:
-            """Refresh only the visible tab (5s timer / tab activation).
+            """Refresh only the visible tab (tab activation / filter or sort change).
 
             Hidden tabs are left alone; they are populated when the user opens
             them (see ``on_tabbed_content_tab_activated``).
@@ -2420,13 +2385,15 @@ if HAVE_TEXTUAL:
         def on_tabbed_content_tab_activated(
                 self, event: TabbedContent.TabActivated) -> None:
             # Populate the tab the user just switched to (hidden tabs are not
-            # polled by the 5s timer), point the range control at its window, show
-            # its own filter, and put keyboard focus on the table it just filled.
+            # polled), point the range control at its window, show its own filter,
+            # and put keyboard focus on the table it just filled.
             if self._usage_ready:
                 self._sync_range_widget()
-                self._refresh_active_tab()
                 self._sync_filter_widget()
+                self._refresh_active_tab()
                 self._focus_active()
+                if self._tab_filters.get(self._active_pane(), "").strip():
+                    self.call_after_refresh(self._anchor_active_table_top)
 
         @staticmethod
         def _panel_line(label: str, value: str) -> str:
@@ -2453,6 +2420,7 @@ if HAVE_TEXTUAL:
         WIDE_TABLES = {
             **{tab.table_id: (tab.columns, tab.note_id, 2) for tab in ENTITY_TABS},
             "t-usage": (USAGE_COLUMNS, "colnote-usage", 4),
+            "dash-projects": (PROJECT_COLUMNS, "colnote-projects", 6),
         }
 
         def _apply_responsive_layout(self, width=None) -> None:
@@ -2561,7 +2529,6 @@ if HAVE_TEXTUAL:
                 return
             now_ms = self._now_ms()
             start, end = self._bounds_for("tab-usage")
-            self._last_refresh = now_ms
             self._render_usage_window()
             own = conn is None
             if own:
@@ -2634,8 +2601,7 @@ if HAVE_TEXTUAL:
                 models = db.q_usage_model_stats(conn, start, end)
                 tools = db.q_tools(conn, limit=self.DASH_TOP,
                                    start_ts=start, end_ts=end)
-                modes = db.q_mode_stats(conn, start, end, by="agent",
-                                        limit=self.DASH_TOP)
+                projects = db.q_project_board(conn, start, end)
                 share = db.q_subagent_share(conn, start, end)
                 hourly = (start is not None
                           and (end - start) <= 36 * 60 * 60 * 1000)
@@ -2651,13 +2617,13 @@ if HAVE_TEXTUAL:
                     f"dashboard query failed ({e}); run: ocut sync")
                 self._report_query_error(e)
                 return
-            self._render_dashboard_kpi(kpi)
+            self._render_dashboard_usage(kpi, s)
             self._render_dashboard_tokens(s)
             self._render_dashboard_cache(s)
             self._render_dashboard_runtime(act, share)
             self._render_dashboard_models(models)
             self._render_dashboard_tools(tools)
-            self._render_dashboard_modes(modes)
+            self._render_dashboard_projects(projects)
             self._render_dashboard_activity(calls_series, cost_series, start, end,
                                             hourly=hourly)
             if not any(kpi.values()) and not (s["requests"] or 0):
@@ -2671,8 +2637,17 @@ if HAVE_TEXTUAL:
         def _put_panel(self, wid: str, label: str, val: str) -> None:
             self.query_one(wid, Static).update(self._panel_line(label, val))
 
-        def _render_dashboard_kpi(self, k: dict) -> None:
-            # COUNT(*) is authoritative -> a real 0, never a dash.
+        def _render_dashboard_usage(self, k: dict, s: dict) -> None:
+            # COUNT(*) is authoritative -> a real 0, never a dash. Requests and
+            # Cost lead the panel, as on the sibling trackers; credits have no
+            # OpenCode source, so the host's own per-step money takes that slot.
+            self._put_panel("#dash-sum-requests", "Requests",
+                            f"{s['requests'] or 0:,}")
+            self._put_panel("#dash-sum-cost", "Cost", fmt_cost(s["cost"]))
+            self._put_panel("#dash-sum-sessions", "Sessions",
+                            f"{k['model_sessions'] or 0:,}")
+            self._put_panel("#dash-sum-projects", "Projects",
+                            f"{k['model_projects'] or 0:,}")
             self._put_panel("#dash-kpi-tools", "Tool calls", f"{k['tool_calls']:,}")
             self._put_panel("#dash-kpi-skills", "Skills", f"{k['skills']:,}")
             self._put_panel("#dash-kpi-agents", "Agents", f"{k['agents']:,}")
@@ -2680,7 +2655,10 @@ if HAVE_TEXTUAL:
             self._put_panel("#dash-kpi-plugins", "Plugins", f"{k['plugins']:,}")
 
         def _render_dashboard_tokens(self, s: dict) -> None:
-            self._put_panel("#dash-tok-requests", "Requests", f"{s['requests'] or 0:,}")
+            self._put_panel("#dash-tok-usage", "Usage Total",
+                            fmt_compact_n(_usage_total_tokens(
+                                s["prompt_tokens"], s["completion_tokens"],
+                                s["cache_read"], s["cache_write"])))
             self._put_panel("#dash-tok-input", "Input",
                             fmt_compact_n(_input_tokens(
                                 s["prompt_tokens"], s["cache_read"],
@@ -2689,16 +2667,9 @@ if HAVE_TEXTUAL:
                             fmt_compact_n(s["completion_tokens"]))
             self._put_panel("#dash-tok-api", "API Total",
                             fmt_compact_n(s["total_tokens"]))
-            self._put_panel("#dash-tok-usage", "Usage Total",
-                            fmt_compact_n(_usage_total_tokens(
-                                s["prompt_tokens"], s["completion_tokens"],
-                                s["cache_read"], s["cache_write"])))
-            self._put_panel("#dash-tok-hit-rate", "Hit rate",
+            self._put_panel("#dash-tok-hit-rate", "Cache hit rate",
                             self._hit_rate(s["cache_read"], s["prompt_tokens"],
                                            s["cache_write"]))
-            # The host's own money for these steps. CodeBuddy has no such source,
-            # which is why this panel differs from the sibling project by design.
-            self._put_panel("#dash-tok-cost", "Cost", fmt_cost(s["cost"]))
 
         def _render_dashboard_cache(self, s: dict) -> None:
             self._put_panel("#dash-cache-hit", "Cache hit",
@@ -2726,22 +2697,29 @@ if HAVE_TEXTUAL:
                             f"{share['sessions'] or 0:,}")
             self._put_panel("#dash-rt-projects", "Projects", f"{a['projects'] or 0:,}")
 
-        def _render_dashboard_modes(self, rows) -> None:
-            """The Top-modes leaderboard: the host's per-step agent, by tokens.
+        def _render_dashboard_projects(self, rows) -> None:
+            """The project ledger: requests, usage and money per host project.
 
-            Same shape as Top models; the cost rides along because a mode is a
-            money question — build and plan burn the bill, subagent agents show
-            $0.0000 because the host bills their steps to the parent session.
+            The host's project id is 40 opaque characters; the directory the
+            session ran in is what a reader recognises, so the label is that
+            directory's basename and the id is the fallback.
             """
-            top = rows[: self.DASH_TOP]
-            if not top:
-                self.query_one("#dash-modes", Static).update("nothing in this window")
-                return
-            lines = [f"{i}. {clip(r['mode'], 22):<22}"
-                     f"{fmt_compact_n(r['total_tokens']):>8}"
-                     f"  {fmt_cost(r['cost'])}"
-                     for i, r in enumerate(top, 1)]
-            self.query_one("#dash-modes", Static).update("\n".join(lines))
+            out = []
+            for r in rows:
+                label = (Path(r["directory"]).name if r["directory"]
+                         else r["project"])
+                out.append([
+                    clip(label or "-", 22),
+                    f"{r['requests']:,}",
+                    fmt_compact_n(_usage_total_tokens(
+                        r["prompt_tokens"], r["completion_tokens"],
+                        r["cache_read"], r["cache_write"])),
+                    fmt_cost(r["cost"]),
+                    f"{r['sessions']:,}",
+                    ts(r["last_used"]),
+                ])
+            self._fill_wide("dash-projects", out,
+                            "No projects in this window")
 
         def _render_dashboard_models(self, rows) -> None:
             top = rows[: self.DASH_TOP]
@@ -2848,7 +2826,7 @@ if HAVE_TEXTUAL:
                             else key[11:])
                 return key[5:]
 
-            title = f"Calls / cost per {unit}"
+            title = f"Calls per {unit}"
             try:
                 self.query_one("#dash-activity-title", Static).update(title)
             except Exception:
@@ -2866,10 +2844,10 @@ if HAVE_TEXTUAL:
             peak = max(cost_series) if cost_series else 0
             if peak > 0:
                 self.query_one("#dash-cost-axis", Static).update(
-                    f"peak ${peak:.2f}/{unit}")
+                    f"cost · peak ${peak:.2f}/{unit}")
             else:
                 self.query_one("#dash-cost-axis", Static).update(
-                    "no cost in this window")
+                    "cost · none in this window")
 
         @staticmethod
         def _hit_rate(hit, miss, write) -> str:
@@ -2912,38 +2890,41 @@ if HAVE_TEXTUAL:
                     ]
                 parts.append(f"sort: {label}")
                 if query:
-                    parts.append(f"filter “{query}” · {len(rows):,} matches")
+                    matched = (f"{len(rows):,} of {total:,}" if total is not None
+                               else f"{len(rows):,} matches")
+                    parts.append(f'filter "{query}" · {matched}')
                 elif total is not None and total > len(rows):
                     parts.append(f"showing {len(rows):,} of {total:,}")
                 note = " · ".join(parts)
             elif query:
-                note = f"No requests match “{query}” in this window"
+                note = f'No requests match "{query}" in this window'
             self.query_one("#usage-note", Static).update(note)
             out = [[
                 ts_secs(r["ts"]), r["model"] or "-",
+                db.provider_label(r["provider"]),
                 fmt_n(_usage_total_tokens(r["prompt_tokens"],
                                           r["completion_tokens"],
                                           r["cache_read"], r["cache_write"])),
+                fmt_cost(r["cost"]),
                 fmt_n(_input_tokens(r["prompt_tokens"], r["cache_read"],
                                     r["cache_write"])),
                 fmt_n(r["completion_tokens"]),
-                fmt_n(r["total_tokens"]), fmt_cost(r["cost"]),
+                fmt_n(r["total_tokens"]),
+                fmt_n(r["cache_read"]),
+                fmt_n(r["prompt_tokens"]),
+                fmt_n(r["cache_write"]),
                 self._hit_rate(r["cache_read"], r["prompt_tokens"],
                                r["cache_write"]),
                 # The host's project id is 40 opaque characters; a prefix is all
                 # that fits beside the numbers, and the detail keeps it whole.
                 clip(r["project"] or "-", 18),
                 r["agent"] or "-",
-                db.provider_label(r["provider"]),
-                fmt_n(r["cache_read"]),
-                fmt_n(r["prompt_tokens"]),
-                fmt_n(r["cache_write"]),
             ] for r in rows]
             # The shared empty state, like the other seven tables: a note above an
             # untouched table reads as a page that failed to load.
             self._fill_wide(
                 "t-usage", out,
-                (f"No requests match “{query}”" if query
+                (f'No requests match "{query}"' if query
                  else "No requests in this window — widen the range above."),
                 key_index=(0, 1), key_kind="call",
                 key_rows=[["model", r["call_id"]] for r in rows])
@@ -3052,48 +3033,13 @@ if HAVE_TEXTUAL:
                 self.push_screen(HistoryScreen(kind, rest, start_ts=start,
                                                end_ts=end, window_label=label))
 
-        # --- R / S shortcuts ------------------------------------------------
+        # --- sync and sort shortcuts ----------------------------------------
 
         def action_refresh(self) -> None:
             # R = incremental sync + reload DB + refresh the UI (not just a
             # re-render of already-loaded data).
             self._set_status("Syncing…")
             self._request_sync()
-
-        def action_toggle_auto_sync(self) -> None:
-            # S = toggle the automatic sync switch. Distinct from R: it does not
-            # trigger a sync itself.
-            self._auto_sync = not self._auto_sync
-            # The line itself carries the state ("· auto-sync OFF"); a bespoke
-            # message here used to wipe the counts off the bar until an unrelated
-            # refresh happened to put them back.
-            self._set_status(self._status_line())
-            self.notify(f"Auto sync: {'ON' if self._auto_sync else 'OFF'}")
-            if self._usage_ready and self._active_pane() == "tab-usage":
-                self._refresh_active_tab()
-
-        # --- automatic sync / refresh timers --------------------------------
-
-        def _auto_sync_tick(self) -> None:
-            # The same shutdown guard as _auto_refresh_tick (D-003). A timer can
-            # fire once more while the app is closing; _request_sync then reaches
-            # for an event loop that is already gone and raises
-            # "RuntimeError: no running event loop", leaving a worker coroutine
-            # that is never awaited.
-            if not self.is_running:
-                return
-            if self._auto_sync:
-                self._request_sync()
-
-        def _auto_refresh_tick(self) -> None:
-            # Only the visible tab is re-queried; hidden tabs refresh when the
-            # user opens them. The is_running guard matters because a timer can
-            # fire once more while the app is shutting down (e.g. run_test's
-            # teardown), after the widgets are gone — query_one then raises
-            # NoMatches from inside the timer and fails the test run.
-            if not self.is_running:
-                return
-            self._refresh_active_tab()
 
         def _request_sync(self) -> None:
             # Guard against concurrent syncs: if one is running, mark a pending
@@ -3142,15 +3088,13 @@ if HAVE_TEXTUAL:
         def _on_sync_done(self, ok: bool, stats, err) -> None:
             self._sync_running = False
             # A sync can land after the app began closing (the worker is a
-            # daemon, so nothing joins it). The timers guard on is_running for
-            # the same reason: refreshing torn-down widgets would raise
-            # NoMatches from inside a callback that can no longer be seen.
+            # daemon, so nothing joins it). Refreshing torn-down widgets would
+            # raise NoMatches from inside a callback that can no longer be seen.
             if not self.is_running:
                 return
             # The indexer names an unreadable host database inside its status dict
             # (`ok: False`, no exception), so both spellings of failure count here.
             if ok and (stats or {}).get("ok", True):
-                self._last_sync = self._now_ms()
                 read = (stats or {}).get("parts_read", 0)
                 if read > 0:
                     self.refresh_data()          # new rows can touch any tab

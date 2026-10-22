@@ -91,9 +91,8 @@ INDEX_IN_PLAN = re.compile(r"\b(?:idx|ux)_\w+")
 # instead of being silently skipped.
 QUERY_ARGUMENTS = {
     "limit": 5, "start_ts": None, "end_ts": None, "kind": "tool", "name": "bash",
-    # `q_child_sessions` searches one agent type's calls; `by` selects the
-    # whitelisted grouping column of `q_mode_stats`.
-    "agent_type": "explore", "by": "agent",
+    # `by` selects the whitelisted grouping column of `q_mode_stats`.
+    "by": "agent",
     "model": "model-x", "provider": "opencode",
     "plugin": "some-plugin", "server": "some-server",
     "offset": 0, "key": "call-1", "text": "needle",

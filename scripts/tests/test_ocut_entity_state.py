@@ -483,35 +483,6 @@ def test_cost_daily_sums_the_steps_cost_per_local_day(conn):
     assert [r["cost"] for r in rows] == [0.75, 0.1]
 
 
-def test_child_sessions_join_the_session_rollup(conn):
-    """A child session's own tokens are the usage evidence the host keeps.
-
-    The host bills the parent, so the child's `cost` is 0 — the join is how
-    the drill-down reaches the 20M tokens this host's subagents burned.
-    """
-    session_row(conn, "ses_parent")
-    session_row(conn, "ses_child", is_subagent=1,
-                started=1_700_000_500_000, ended=1_700_000_560_000,
-                agent="general", tokens=(500, 100, 0, 30, 5))
-    conn.execute(
-        "INSERT INTO agent_usage(call_id, agent_type, session_id,"
-        " child_session_id, ts) VALUES('a1', 'general', 'ses_parent',"
-        " 'ses_child', 1_700_000_490_000)")
-    # A call whose child never got a session row joins to nothing.
-    conn.execute(
-        "INSERT INTO agent_usage(call_id, agent_type, session_id,"
-        " child_session_id, ts) VALUES('a2', 'general', 'ses_parent',"
-        " NULL, 1_700_000_495_000)")
-    conn.commit()
-    rows = db.q_child_sessions(conn, "general")
-    assert len(rows) == 1
-    r = rows[0]
-    assert r["session_id"] == "ses_child"
-    assert r["duration_ms"] == 60_000
-    assert (r["tokens_input"], r["tokens_output"]) == (500, 100)
-    assert r["cost"] == 0.0
-
-
 def test_sessions_report_lists_newest_first_with_the_host_rollup(conn):
     session_row(conn, "ses_old", started=1_700_000_000_000,
                 ended=1_700_000_060_000)

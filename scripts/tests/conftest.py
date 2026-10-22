@@ -2,7 +2,7 @@
 
 Every module here builds its own fixture database and hands the paths it needs to
 the code explicitly, but the code defaults every path it is *not* handed to the
-real home. A fixture that forgets one — or the TUI, which syncs on its own timer
+real home. A fixture that forgets one — or the TUI, which syncs once on launch
 and passes nothing — then reads the developer's actual OpenCode install, and a
 test that is green on this laptop is red on a runner that has no such tree (or the
 reverse). Two guards already existed, one per module, and both stopped short of
