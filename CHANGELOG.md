@@ -1899,3 +1899,20 @@ Evidence 2026-10-22: rendered at 140x42 in tmux — three panels in row 1, the l
 Cost     One cell of the model name and one of the token total are gone at 140 columns; the
          Tokens tab still prints both in full.
 Commit   7fc2a14
+
+### D-091 · 2026-10-22 · fix
+Symptom  D-090 fixed the leaderboard to 40 cells, which fits until a field grows a digit:
+         the sixth digit of a request count ("11,008") makes the line 41 in a 41-cell panel,
+         and the tool list had the same fixed 41. The status bar had no height, and at 260
+         cells it wrapped to a second row that was taken from the tab above it.
+Change   Both leaderboards size their name field from the panel's measured width less one
+         reserved column and the widths of the fields the data needs, so a longer count
+         narrows the name instead of wrapping the row. `#status` is one row, clipped with
+         an ellipsis.
+Evidence L0 2026-10-22: the dashboard rendered with the picker on All time at 120x45,
+         130x45, 140x45, 150x45 and 160x45, every Static measured against its own width —
+         0 overflows after, and the status bar is the only line the probe reports (by
+         design, it is clipped rather than wrapped). Suite green (383 tests).
+Cost     At 140 columns the name field is now 24 cells (it was 20) and the tail of the
+         status line is clipped on terminals narrower than 260 cells.
+Commit   236043f
