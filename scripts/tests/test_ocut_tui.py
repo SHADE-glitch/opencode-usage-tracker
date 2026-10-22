@@ -22,6 +22,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import ocut_db as db                                    # noqa: E402
+from textual.css.scalar import Unit                    # noqa: E402
 from textual.widgets import DataTable                   # noqa: E402
 
 _spec = importlib.util.spec_from_file_location(
@@ -460,18 +461,24 @@ def test_the_window_changes_what_the_dashboard_counts(tracker, clock):
     conn.close()
 
 
-def test_the_dashboard_trend_is_per_local_day_even_for_today(tracker, clock):
-    """One mark per local day — a Today window is never 24 clock-hour buckets."""
+def test_the_dashboard_draws_no_runtime_or_calls_per_day_panel(tracker, clock):
+    """Three rows: headline counts, the leaderboards, the project ledger.
+
+    The Runtime and Calls-per-day panels answered questions every other tab
+    already answers better (the Tools tab has the failure count; the Usage page
+    has the per-day history), and they cost a whole dashboard row. Removing them
+    is the layout, so the absence is what this pins — a leftover id would mean a
+    panel came back without its numbers.
+    """
     async def body(pilot, app):
-        app.tab_range["tab-dashboard"] = "1d"
-        app._refresh_active_tab()
-        await pilot.pause(0.6)
-        title = str(app.query_one("#dash-activity-title").content)
-        assert title == "Calls per day", title
-        drawn = str(app.query_one("#dash-activity").content).strip()
-        assert len(drawn) == 1, f"Today must draw one mark, got {drawn!r}"
-        axis = str(app.query_one("#dash-activity-axis").content)
-        assert "/day" in axis and "/hour" not in axis, axis
+        await activate(app, pilot, "tab-dashboard")
+        for gone in ("#dash-activity", "#dash-activity-title",
+                     "#dash-activity-axis", "#dash-cost", "#dash-cost-axis",
+                     "#dash-rt-failed", "#dash-rt-running", "#dash-rt-subagents",
+                     "#dash-rt-compactions", "#dash-rt-peak"):
+            assert not app.query(gone), f"{gone} should be gone"
+        rows = [w.id for w in app.query(".dash-row")]
+        assert rows == ["dash-row-1", "dash-row-2", "dash-row-3"], rows
     drive(lambda: tui.TrackerApp(str(tracker), clock=clock), body)
 
 
@@ -502,29 +509,30 @@ def test_token_panels_print_the_hosts_own_step_numbers(tracker, clock):
         write = sum(r[3] for r in rows)
         total = sum(r[4] for r in rows)
         inp = prompt + read + write               # full prompt = CodeBuddy's Input
-        got = {w.id: str(w.content) for w in app.query("#dash-tok-input, #dash-tok-api,"
+        got = {w.id: str(w.content) for w in app.query("#dash-tok-input,"
                                                       " #dash-cache-hit,"
                                                       " #dash-tok-usage")}
         # Panel lines use the compact form so a 12-digit total cannot push the
         # line into a second row; the tables keep the exact comma-grouped value.
         assert tui.fmt_compact_n(inp) in got["dash-tok-input"], got
-        assert tui.fmt_compact_n(total) in got["dash-tok-api"], got
         assert tui.fmt_compact_n(read) in got["dash-cache-hit"], got
+        # The API total has no panel: one token total, and it is the Usage Total.
+        assert not app.query("#dash-tok-api")
         # Usage Total = Input + Output + cache hit, and it is NOT the host total
         assert tui.fmt_compact_n(inp + completion + read) in got["dash-tok-usage"], got
     drive(lambda: tui.TrackerApp(str(tracker), clock=clock), body)
     conn.close()
 
 
-def test_the_dashboard_shows_cost_failed_and_running_separately(tracker, clock):
-    """The two repairs the old dashboard hid: cost is a number, and error/running
-    are two counts.
+def test_the_dashboard_shows_real_money_and_leaves_failures_to_the_tools_tab(
+        tracker, clock):
+    """Cost is a number on the dashboard; the failure/running split is not.
 
-    "Incomplete" once summed `error` + `running` (492 on this host) while the
-    Tools tab's `fail` said 485 — one panel answering two questions with one
-    number. The fixture has an `error` call already; a `running` one and a
-    cost-bearing step are inserted by hand, and each panel is read against the
-    SQL the window would produce.
+    The dashboard used to answer "how many failed, how many running" in a
+    Runtime panel that summed them into one "Incomplete" figure the Tools tab
+    disagreed with. The panel is gone and the Tools tab is the one place that
+    answers it, from the same rows — so this checks both halves: money on the
+    dashboard, the two counts (and not their sum) on Tools.
     """
     conn = sqlite3.connect(tracker)
     ts = int(clock() * 1000) - 60_000
@@ -543,18 +551,24 @@ def test_the_dashboard_shows_cost_failed_and_running_separately(tracker, clock):
         app.tab_range["tab-dashboard"] = "all"
         app._refresh_active_tab()
         await pilot.pause(0.6)
-        got = {w.id: str(w.content) for w in app.query(
-            "#dash-sum-cost, #dash-rt-failed, #dash-rt-running")}
+        cost = conn.execute("SELECT SUM(cost) FROM model_calls").fetchone()[0]
+        shown = str(app.query_one("#dash-sum-cost").content)
+        assert f"${cost:.4f}" in shown, shown
+        await activate(app, pilot, "tab-tools")
+        table = app.query_one("#t-tools", DataTable)
+        heads = headers(table)
+        rows = [{heads[i]: cell(table, r, i) for i in range(len(heads))}
+                for r in range(table.row_count)]
+        # The tab's two columns, summed over every tool, are the two counts the
+        # Runtime panel used to add together.
         failed = conn.execute("SELECT COUNT(*) FROM tool_calls"
                               " WHERE status='error'").fetchone()[0]
         running = conn.execute("SELECT COUNT(*) FROM tool_calls"
-                               " WHERE status='running'").fetchone()[0]
-        cost = conn.execute("SELECT SUM(cost) FROM model_calls").fetchone()[0]
-        assert f"${cost:.4f}" in got["dash-sum-cost"], got
-        assert f"{failed:,}" in got["dash-rt-failed"], got
-        assert f"{running:,}" in got["dash-rt-running"], got
-        # Two panels, two numbers — the old sum would fail this line.
-        assert got["dash-rt-failed"] != got["dash-rt-running"], got
+                               " WHERE status IN ('running','streaming')"
+                               ).fetchone()[0]
+        assert sum(int(r["fail"]) for r in rows) == failed, rows
+        assert sum(int(r["run"]) for r in rows) == running, rows
+        assert failed != failed + running, "the sum is not either count"
     drive(lambda: tui.TrackerApp(str(tracker), clock=clock), body)
     conn.close()
 
@@ -951,12 +965,13 @@ def test_the_sync_runs_in_a_daemon_thread_so_quitting_never_waits(tmp_path):
         "the sync thread must be a daemon, or quitting waits for it")
 
 
-def test_the_dashboard_shows_projects_subagents_and_a_cost_series(tracker, clock):
-    """The OpenCode-native panels the sibling tracker cannot have.
+def test_the_project_ledger_grows_with_its_rows_and_scrolls(tracker, clock):
+    """The project board the sibling tracker cannot have — as a growing ledger.
 
-    A cost-bearing step in its own project is inserted by hand; the fixture
-    sessions are all main-agent sessions, so the Subagents line reads 0/2.
-    Each panel is read against what the window's own SQL would produce.
+    A cost-bearing step in its own project is inserted by hand, then read back
+    off the board. The board used to be a fixed nine rows inside a fixed-height
+    panel: a tenth project was silently invisible. It now takes the height its
+    rows need and the dashboard pane scrolls once the screen is full.
     """
     conn = sqlite3.connect(tracker)
     ts = int(clock() * 1000) - 60_000
@@ -977,13 +992,9 @@ def test_the_dashboard_shows_projects_subagents_and_a_cost_series(tracker, clock
         row = labels.index("proj")
         assert cell(board, row, 1) == "1", cell(board, row, 1)
         assert "$0.0125" in cell(board, row, 3), cell(board, row, 3)
-        sub = str(app.query_one("#dash-rt-subagents").content)
-        assert "0 of 2" in sub, sub
-        axis = str(app.query_one("#dash-cost-axis").content)
-        assert "cost · peak $0.01/day" in axis, axis
-        bars = str(app.query_one("#dash-cost").content)
-        assert bars.strip() and "·" not in bars, (
-            "a day with cost must draw a bar, not the dotted empty state", bars)
+        assert board.styles.height.unit is Unit.AUTO, board.styles.height
+        pane = app.query_one("#dash-box")
+        assert str(pane.styles.overflow_y) == "auto", pane.styles.overflow_y
     drive(lambda: tui.TrackerApp(str(tracker), clock=clock), body)
     conn.close()
 

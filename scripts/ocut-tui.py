@@ -241,14 +241,14 @@ CUSTOM_RANGE = "custom"
 # step, so the money is real. The plan keeps a prefix, so a narrow terminal drops
 # `Agent` and `Project` before it drops a measurement.
 USAGE_COLUMNS = ("Time", "Model", "Provider", "Usage Total", "Cost", "Input",
-                 "Output", "API Total", "Cache hit", "Cache miss",
+                 "Output", "Cache hit", "Cache miss",
                  "Cache write", "Cache hit rate", "Project", "Agent")
 
 # Tokens-tab column order mirrors the family: the measure family leads, and the
 # page's own `Share` sits last, where it can drop without taking a measurement
 # with it. The cache counts stay so a reader can see what the rate was made of.
 TOKEN_COLUMNS = ("Model", "Provider", "Usage Total", "Cost", "Requests",
-                 "Input", "Output", "API Total", "Cache hit", "Cache miss",
+                 "Input", "Output", "Cache hit", "Cache miss",
                  "Cache write", "Cache hit rate", "Share")
 
 # Entity tabs and the two detail screens. Declared here rather than inline at
@@ -391,9 +391,9 @@ def _mcp_tool_row(r, kind):
 
 
 def _token_row(r, kind):
-    """One Tokens row. API Total is the host's step total; Usage Total is the
-    display-only cache-hit re-add, and the three cache columns are CodeBuddy's
-    hit/miss/write mapped onto OpenCode's read/input/write."""
+    """One Tokens row. Usage Total is the display-only cache-hit re-add, and the
+    three cache columns are CodeBuddy's hit/miss/write mapped onto OpenCode's
+    read/input/write."""
     hit = db.cache_hit_rate(r["cache_read"], r["prompt_tokens"],
                             r["cache_write"])
     share = r["share_pct"] if "share_pct" in r.keys() else None
@@ -405,7 +405,6 @@ def _token_row(r, kind):
             fmt_n(_input_tokens(r["prompt_tokens"], r["cache_read"],
                                 r["cache_write"])),
             fmt_n(r["completion_tokens"]),
-            fmt_n(r["total_tokens"]),
             fmt_n(r["cache_read"]),
             fmt_n(r["prompt_tokens"]),
             fmt_n(r["cache_write"]),
@@ -461,7 +460,9 @@ CALL_DETAIL_LABELS = {
     "reasoning_tokens": "reasoning tokens",
     "cache_read": "cache read", "cache_write": "cache write",
     "prompt_total_tokens": "prompt total",
-    "total_tokens": "api total", "total_tokens_source": "total source",
+    # The host's own per-step total, named for where it came from: every panel
+    # prints one token total and it is `usage total`.
+    "total_tokens": "reported total", "total_tokens_source": "total source",
     "usage_available": "usage available", "missing": "missing fields",
 }
 _DETAIL_TIME_COLS = {"ts"}
@@ -1458,7 +1459,11 @@ if HAVE_TEXTUAL:
                     rows.append([
                         ts(r["ts"]), r["model"] or "-",
                         fmt_n(r["prompt_tokens"]), fmt_n(r["completion_tokens"]),
-                        fmt_n(r["total_tokens"]), fmt_cost(r["cost"]),
+                        fmt_n(_usage_total_tokens(r["prompt_tokens"],
+                                                  r["completion_tokens"],
+                                                  r["cache_read"],
+                                                  r["cache_write"])),
+                        fmt_cost(r["cost"]),
                         fmt_n(r["cache_read"]),
                         fmt_n(r["cache_write"]),
                         "yes" if r["usage_available"] else "not counted",
@@ -1484,7 +1489,7 @@ if HAVE_TEXTUAL:
                     f"{s['with_usage']} with usage · "
                     f"in {fmt_n(s['prompt_tokens'])} · "
                     f"out {fmt_n(s['completion_tokens'])} · "
-                    f"api total {fmt_n(s['total_tokens'])} · cache "
+                    f"cache "
                     f"{fmt_n(s['cache_read'])}/{fmt_n(s['cache_write'])} · "
                     f"{self.window_label}")
 
@@ -1617,9 +1622,11 @@ if HAVE_TEXTUAL:
             height: auto;
         }
         #panel-dash-cache, #panel-dash-tools,
-        #panel-dash-activity, #panel-dash-projects { margin: 0; }
+        #panel-dash-projects { margin: 0; }
+        /* The ledger grows with its rows and the box scrolls once the screen is
+           full — a fixed 9 rows silently hid the rest of a long project list. */
         #panel-dash-projects { height: auto; }
-        #dash-projects { height: 9; }
+        #dash-projects { height: auto; }
         .panel-title { text-style: bold; color: $accent; }
         /* Requests is one table with a compact two-line header. The old four
            bordered panels consumed 40% of a short terminal and then clipped their
@@ -1632,8 +1639,6 @@ if HAVE_TEXTUAL:
            height because a note that is itself cut off at the right edge would be
            the same defect it exists to report. */
         .col-note { padding: 0 1; color: $text-muted; height: auto; display: none; }
-        #dash-activity, #dash-cost { color: $accent; }
-        #dash-activity-axis, #dash-cost-axis { color: $text-muted; }
         #t-usage { height: 1fr; min-height: 6; }
         .dash-row.compact { layout: grid; grid-size: 2; }
         .dash-row.compact.stacked { layout: vertical; }
@@ -1785,7 +1790,6 @@ if HAVE_TEXTUAL:
                                 Static(id="dash-tok-usage"),
                                 Static(id="dash-tok-input"),
                                 Static(id="dash-tok-output"),
-                                Static(id="dash-tok-api"),
                                 Static(id="dash-tok-hit-rate"),
                                 classes="usage-panel", id="panel-dash-tokens",
                             ),
@@ -1812,33 +1816,8 @@ if HAVE_TEXTUAL:
                             ),
                             classes="dash-row", id="dash-row-2",
                         ),
-                        # Row 3: runtime health + the per-day trend.
-                        Horizontal(
-                            Vertical(
-                                Static("Runtime", classes="panel-title"),
-                                Static(id="dash-rt-completed"),
-                                Static(id="dash-rt-failed"),
-                                Static(id="dash-rt-running"),
-                                Static(id="dash-rt-avg"),
-                                Static(id="dash-rt-sessions"),
-                                Static(id="dash-rt-projects"),
-                                Static(id="dash-rt-subagents"),
-                                classes="usage-panel", id="panel-dash-runtime",
-                            ),
-                            Vertical(
-                                Static("Calls per day", id="dash-activity-title",
-                                       classes="panel-title"),
-                                Static(id="dash-activity"),
-                                Static(id="dash-activity-axis"),
-                                # OpenCode prices each step, so cost has its own
-                                # series over the same local days. Its axis names
-                                # the money; the panel title names the calls.
-                                Static(id="dash-cost"),
-                                Static(id="dash-cost-axis"),
-                                classes="usage-panel", id="panel-dash-activity",
-                            ),
-                            classes="dash-row", id="dash-row-3",
-                        ),
+                        # Row 3: the project ledger, and the only panel that grows
+                        # past its own content: it takes whatever height is left.
                         Horizontal(
                             Vertical(
                                 Static("Projects", classes="panel-title"),
@@ -1849,7 +1828,7 @@ if HAVE_TEXTUAL:
                                 classes="usage-panel",
                                 id="panel-dash-projects",
                             ),
-                            classes="dash-row", id="dash-row-4",
+                            classes="dash-row", id="dash-row-3",
                         ),
                         Static(id="dash-note"),
                         id="dash-box",
@@ -2586,7 +2565,6 @@ if HAVE_TEXTUAL:
                 f"Usage Total {fmt_compact_n(usage_total)}",
                 f"Input {fmt_compact_n(inp)}",
                 f"Output {fmt_compact_n(s['completion_tokens'])}",
-                f"API Total {fmt_compact_n(s['total_tokens'])}",
                 f"Cost {fmt_cost(s['cost'])}",
             ]
             missing = []
@@ -2610,14 +2588,10 @@ if HAVE_TEXTUAL:
             try:
                 kpi = db.q_usage_kpi(conn, start, end)
                 s = db.q_usage_summary(conn, start, end)
-                act = db.q_usage_activity(conn, start, end)
                 models = db.q_usage_model_stats(conn, start, end)
                 tools = db.q_tools(conn, limit=self.DASH_TOP,
                                    start_ts=start, end_ts=end)
                 projects = db.q_project_board(conn, start, end)
-                share = db.q_subagent_share(conn, start, end)
-                calls_series = db.q_usage_daily(conn, start, end)
-                cost_series = db.q_usage_cost_daily(conn, start, end)
             except sqlite3.Error as e:
                 # e.g. an un-migrated DB where the newer columns are missing.
                 self.query_one("#dash-note", Static).update(
@@ -2627,11 +2601,9 @@ if HAVE_TEXTUAL:
             self._render_dashboard_usage(kpi, s)
             self._render_dashboard_tokens(s)
             self._render_dashboard_cache(s)
-            self._render_dashboard_runtime(act, share)
             self._render_dashboard_models(models)
             self._render_dashboard_tools(tools)
             self._render_dashboard_projects(projects)
-            self._render_dashboard_activity(calls_series, cost_series, start, end)
             if not any(kpi.values()) and not (s["requests"] or 0):
                 self.query_one("#dash-note", Static).update(
                     "No data in this window — widen the range above.")
@@ -2671,8 +2643,6 @@ if HAVE_TEXTUAL:
                                 s["cache_write"])))
             self._put_panel("#dash-tok-output", "Output",
                             fmt_compact_n(s["completion_tokens"]))
-            self._put_panel("#dash-tok-api", "API Total",
-                            fmt_compact_n(s["total_tokens"]))
             self._put_panel("#dash-tok-hit-rate", "Cache hit rate",
                             self._hit_rate(s["cache_read"], s["prompt_tokens"],
                                            s["cache_write"]))
@@ -2684,24 +2654,6 @@ if HAVE_TEXTUAL:
                             fmt_compact_n(s["prompt_tokens"]))
             self._put_panel("#dash-cache-write", "Cache write",
                             fmt_compact_n(s["cache_write"]))
-
-        def _render_dashboard_runtime(self, a: dict, share: dict) -> None:
-            # counts are COUNT-based -> a real 0; avg_ms is NULL when nothing ran.
-            # `error` and `running` are separate panels, not one "Incomplete":
-            # the Tools tab shows them as `fail` and `run`, and a dashboard that
-            # summed them disagreed with the tab by the number of live calls.
-            self._put_panel("#dash-rt-completed", "Completed", f"{a['completed'] or 0:,}")
-            self._put_panel("#dash-rt-failed", "Failed", f"{a['errored'] or 0:,}")
-            self._put_panel("#dash-rt-running", "Running", f"{a['running'] or 0:,}")
-            self._put_panel("#dash-rt-avg", "Avg tool time", ms(a["avg_ms"]))
-            self._put_panel("#dash-rt-sessions", "Sessions", f"{a['sessions'] or 0:,}")
-            # OpenCode records a subagent run as a session of its own, and on a
-            # working day they are the majority — one "sessions" count hides
-            # that, so the split is its own line.
-            self._put_panel("#dash-rt-subagents", "Subagents",
-                            f"{share['subagents'] or 0:,} of "
-                            f"{share['sessions'] or 0:,}")
-            self._put_panel("#dash-rt-projects", "Projects", f"{a['projects'] or 0:,}")
 
         def _render_dashboard_projects(self, rows) -> None:
             """The project ledger: requests, usage and money per host project.
@@ -2727,13 +2679,19 @@ if HAVE_TEXTUAL:
             self._fill_wide("dash-projects", out,
                             "No projects in this window")
 
+        @staticmethod
+        def _row_usage_total(r) -> int:
+            """Usage Total for one rollup row: input + output + cache read."""
+            return _usage_total_tokens(r["prompt_tokens"], r["completion_tokens"],
+                                       r["cache_read"], r["cache_write"])
+
         def _render_dashboard_models(self, rows) -> None:
             top = rows[: self.DASH_TOP]
             if not top:
                 self.query_one("#dash-models", Static).update("nothing in this window")
                 return
             lines = [f"{i}. {clip(r['model'], 22):<22}"
-                     f"{fmt_compact_n(r['total_tokens']):>8}"
+                     f"{fmt_compact_n(self._row_usage_total(r)):>8}"
                      f" {r['requests']:>5} req"
                      for i, r in enumerate(top, 1)]
             self.query_one("#dash-models", Static).update("\n".join(lines))
@@ -2748,93 +2706,6 @@ if HAVE_TEXTUAL:
                      f"{r['calls']:>7,} · {ms(r['avg_ms'])}"
                      for i, r in enumerate(top, 1)]
             self.query_one("#dash-tools", Static).update("\n".join(lines))
-
-        # Block characters for the per-day sparkline (index 0 = no activity).
-        _SPARK = " ▁▂▃▄▅▆▇█"
-
-        def _sparkline(self, values) -> str:
-            peak = max(values) if values else 0
-            if peak <= 0:
-                # A quiet window still draws something: an empty string left a
-                # blank region on the Dashboard, which reads as "widget broken"
-                # rather than "no calls". A dotted baseline says the same thing
-                # as the zero-height bars it replaces, without inventing a bar.
-                return "·" * len(values)
-            out = []
-            for v in values:
-                level = 0 if v <= 0 else min(8, max(1, round(v / peak * 8)))
-                out.append(self._SPARK[level])
-            return "".join(out)
-
-        def _render_dashboard_activity(self, calls_rows, cost_rows, start, end):
-            """Two sparklines over one shared axis of local calendar days.
-
-            The base bucket is one day, so a Today window is a single mark rather
-            than 24 hourly ones. When the window has more days than the panel has
-            cells, neighbouring days are grouped into equal ranges so the shape
-            still fits instead of wrapping. The cost series answers "when did it
-            burn", which a call count cannot.
-            """
-            now = self._now_ms() if end is None else end
-            end_dt = datetime.fromtimestamp(now / 1000)
-            end_day = end_dt.date()
-            if start is not None:
-                start_day = datetime.fromtimestamp(start / 1000).date()
-            elif calls_rows:
-                start_day = datetime.strptime(calls_rows[0]["day"], "%Y-%m-%d").date()
-            else:
-                start_day = end_day
-            days, d = [], start_day
-            while d <= end_day:
-                days.append(d)
-                d += timedelta(days=1)
-            keys = [day.isoformat() for day in days]
-            counts = {r["day"]: r["calls"] for r in calls_rows}
-            costs = {r["day"]: r["cost"] for r in cost_rows}
-            base_unit = "day"
-
-            try:
-                cap = max(12, self.query_one("#dash-activity").size.width or 44)
-            except Exception:
-                cap = 44
-            bucket = (len(keys) + cap - 1) // cap if keys else 1
-            if bucket > 1:
-                groups = [keys[i:i + bucket] for i in range(0, len(keys), bucket)]
-                labels = [g[0] for g in groups]
-                series = [sum(counts.get(k, 0) for k in g) for g in groups]
-                cost_series = [sum(costs.get(k) or 0 for k in g) for g in groups]
-                unit = f"{bucket}{base_unit[0]}"      # 2d
-            else:
-                labels = keys
-                series = [counts.get(k, 0) for k in keys]
-                cost_series = [costs.get(k) or 0 for k in keys]
-                unit = base_unit
-
-            def edge(key: str) -> str:
-                return key[5:]
-
-            title = f"Calls per {unit}"
-            try:
-                self.query_one("#dash-activity-title", Static).update(title)
-            except Exception:
-                pass
-            self.query_one("#dash-activity", Static).update(self._sparkline(series))
-            axis = f"{edge(labels[0])} → {edge(labels[-1])}" if labels else ""
-            if any(series):
-                peak = max(series)
-                suffix = f" · peak {peak:,}/{unit}"
-            else:
-                suffix = " · no activity"
-            self.query_one("#dash-activity-axis", Static).update(axis + suffix)
-            self.query_one("#dash-cost", Static).update(
-                self._sparkline(cost_series))
-            peak = max(cost_series) if cost_series else 0
-            if peak > 0:
-                self.query_one("#dash-cost-axis", Static).update(
-                    f"cost · peak ${peak:.2f}/{unit}")
-            else:
-                self.query_one("#dash-cost-axis", Static).update(
-                    "cost · none in this window")
 
         @staticmethod
         def _hit_rate(hit, miss, write) -> str:
@@ -2896,7 +2767,6 @@ if HAVE_TEXTUAL:
                 fmt_n(_input_tokens(r["prompt_tokens"], r["cache_read"],
                                     r["cache_write"])),
                 fmt_n(r["completion_tokens"]),
-                fmt_n(r["total_tokens"]),
                 fmt_n(r["cache_read"]),
                 fmt_n(r["prompt_tokens"]),
                 fmt_n(r["cache_write"]),

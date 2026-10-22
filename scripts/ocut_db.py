@@ -1802,6 +1802,22 @@ _PROMPT_TOTAL_EXPR = (
 )
 _AGG_PROMPT_TOTAL_EXPR = f"SUM({_PROMPT_TOTAL_EXPR})"
 
+# --- the one token total the panels print ----------------------------------
+# "Usage Total" = full prompt + output + the cache read again — the same
+# display-only shape every tracker in this family shows, kept here so a rollup
+# can ORDER BY the number the reader sees. It is not the API total
+# (``total_tokens``), which is no longer surfaced anywhere.
+# NULL only where the TUI helper returns None: no completion, or no prompt part
+# at all. Anything else contributes, so a partly-reported row is not dropped.
+_USAGE_TOTAL_EXPR = (
+    "CASE WHEN completion_tokens IS NULL THEN NULL"
+    " WHEN prompt_tokens IS NULL AND cache_read IS NULL"
+    " AND cache_write IS NULL THEN NULL"
+    " ELSE COALESCE(prompt_tokens, 0) + completion_tokens"
+    " + 2 * COALESCE(cache_read, 0) + COALESCE(cache_write, 0) END"
+)
+_AGG_USAGE_TOTAL_EXPR = f"SUM({_USAGE_TOTAL_EXPR})"
+
 
 def cache_hit_rate(hit, miss, write=None):
     """``hit / (hit + miss + write)`` as a fraction, or ``None`` when undefined.
@@ -2113,14 +2129,20 @@ def q_usage_request_logs(conn, start_ts, end_ts, limit=100, offset=0,
 
 # Whitelisted orderings for q_usage_model_stats (never user-supplied SQL).
 _MODEL_STATS_ORDER = {
+    "usage_total_tokens": "usage_total_tokens DESC, requests DESC",
     "total_tokens": "total_tokens DESC, requests DESC",
     "requests": "requests DESC, total_tokens DESC",
     "model": "model COLLATE NOCASE ASC",
 }
 
 
-def q_usage_model_stats(conn, start_ts, end_ts, order_by="total_tokens"):
-    """Per-model rollup for one window. ``order_by`` is whitelisted."""
+def q_usage_model_stats(conn, start_ts, end_ts, order_by="usage_total_tokens"):
+    """Per-model rollup for one window. ``order_by`` is whitelisted.
+
+    Ordered by Usage Total by default: the dashboard prints that number, so
+    ordering by the API-side total would rank rows by a figure the reader
+    cannot see.
+    """
     where, params = _ts_where(start_ts, end_ts)
     order = _MODEL_STATS_ORDER.get(order_by, _MODEL_STATS_ORDER["total_tokens"])
     return conn.execute(
@@ -2132,6 +2154,7 @@ def q_usage_model_stats(conn, start_ts, end_ts, order_by="total_tokens"):
         " SUM(reasoning_tokens) AS reasoning_tokens,"
         f" {_AGG_TOTAL_EXPR} AS total_tokens,"
         f" {_AGG_TOTAL_SOURCE_EXPR} AS total_tokens_source,"
+        f" {_AGG_USAGE_TOTAL_EXPR} AS usage_total_tokens,"
         " SUM(cache_read) AS cache_read,"
         " SUM(cache_write) AS cache_write,"
         " SUM(cost) AS cost"
