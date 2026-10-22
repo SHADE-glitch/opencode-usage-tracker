@@ -80,6 +80,18 @@ def test_help_works_with_a_broken_install(tmp_path):
             "the venv was resolved, so --help did not answer first"
 
 
+def test_a_subcommand_keeps_its_own_help(scripts):
+    """`ocut stats --help` must reach the stats parser.
+
+    The header is the launcher's answer to a bare `--help`; swallowing the flag
+    after a subcommand made every route's options unreachable, which cbut and
+    qcut never did.
+    """
+    target, argv = target_of(run("stats", "--help", scripts=scripts))
+    assert target == "ocut-stats.py"
+    assert argv == ["stats", "--help"]
+
+
 def test_help_is_read_off_the_script_not_a_line_range():
     """A hard-coded range is how help text drifts out of step with the script.
 

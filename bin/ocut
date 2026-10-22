@@ -24,6 +24,8 @@ set -euo pipefail
 # venv first would turn "show me the commands" into a failure to find python.
 for a in "$@"; do
   case "$a" in
+    # A bare --help (or the word help) is answered before anything is resolved:
+    # it is the one thing that must work when the install is broken.
     -h|--help|help)
       # Print the leading comment block instead of a hard-coded line range: a
       # range is exactly what lets help text drift out of step with the script.
@@ -35,6 +37,11 @@ for a in "$@"; do
       done
       exit 0
       ;;
+    # A global flag: keep looking, a subcommand may still be ahead.
+    -*) ;;
+    # A subcommand owns everything after it, including its own --help. That is
+    # what lets `ocut stats --help` reach the stats parser, as cbut and qcut do.
+    *) break ;;
   esac
 done
 
