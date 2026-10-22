@@ -1934,3 +1934,17 @@ Cost     On a tall terminal the ledger is mostly empty rows. The alternative —
          space outside the card — looked like a broken layout, and the ledger is the only
          panel that can show one more row per unit of height.
 Commit   c9a4229
+
+### D-093 · 2026-10-22 · fix
+Symptom  Growing the terminal left the ledger at the old height. `_fit_dashboard` was scheduled
+         from the app's `on_resize`, where the box is still laid out at the old height: the
+         spare was the previous window's, and nothing re-ran once the new layout landed.
+Change   The box is a `DashBox(Vertical)` that re-fits the ledger on its *own* resize — that
+         event fires after it has been laid out at the new height. `on_resize` keeps the
+         responsive layout and the column plan only.
+Evidence L0 2026-10-22: 120x45 -> 160x60 -> 120x20 -> 120x45 on the real index: gap 0 / 0 /
+         scroll 18 / 0, ledger 7 / 28 / 4 / 7 rows. The ledger case now resizes the window
+         instead of only mounting at two sizes. Suite green (384 tests).
+Cost     One subclass and a private call (`getattr(app, "_fit_dashboard")`) instead of the
+         app-level hook; the app no longer knows when its own dashboard was resized.
+Commit   95633aa
