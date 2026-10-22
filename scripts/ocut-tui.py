@@ -1601,7 +1601,11 @@ if HAVE_TEXTUAL:
         #hist-title, #resp-title, #call-title { padding: 1 2; }
         TabbedContent { height: 1fr; }
         DataTable { height: 1fr; }
-        #status { padding: 0 2; color: $text-muted; }
+        /* One row, always: the line is longer than any terminal, and letting it
+           wrap to a second row stole a row from the tab above it. The head of
+           the line (db, tool calls) is what survives the ellipsis. */
+        #status { padding: 0 2; color: $text-muted; height: 1;
+                  text-wrap: nowrap; text-overflow: ellipsis; }
         /* The drill-down header (counts) and the single-call detail. The summary
            is one auto-height line; the detail body takes the rest of the screen
            and scrolls, its label column fixed so long values wrap in 1fr. */
@@ -2691,13 +2695,19 @@ if HAVE_TEXTUAL:
             if not top:
                 self.query_one("#dash-models", Static).update("nothing in this window")
                 return
-            # 20 + 7 + 1 + 5 + 4 = 40 inside the border, so three panels still
-            # fit one row at 140 columns; at 43 the "req" wrapped onto its own
-            # line and the ranking read as broken.
-            lines = [f"{i}. {clip(r['model'], 20):<20}"
-                     f"{fmt_compact_n(self._row_usage_total(r)):>7}"
-                     f" {r['requests']:>5} req"
-                     for i, r in enumerate(top, 1)]
+            # Sized to the panel, not to a constant: 40 cells fit the three-up
+            # row at 140 columns, but a six-digit request count made it 41 and
+            # wrapped "req" onto a line of its own.
+            panel = self.query_one("#dash-models", Static)
+            budget = (panel.size.width or 41) - 1
+            nums = [fmt_compact_n(self._row_usage_total(r)) for r in top]
+            reqs = [f"{r['requests']:,}" for r in top]
+            num_w = max(len(n) for n in nums)
+            req_w = max(len(q) for q in reqs)
+            name_w = max(8, budget - (num_w + req_w + 8))
+            lines = [f"{i}. {clip(r['model'], name_w):<{name_w}}{n:>{num_w}}"
+                     f" {q:>{req_w}} req"
+                     for i, (r, n, q) in enumerate(zip(top, nums, reqs), 1)]
             self.query_one("#dash-models", Static).update("\n".join(lines))
 
         def _render_dashboard_tools(self, rows) -> None:
@@ -2706,9 +2716,16 @@ if HAVE_TEXTUAL:
             if not top:
                 self.query_one("#dash-tools", Static).update("nothing in this window")
                 return
-            lines = [f"{i}. {clip(r['tool_name'], 22):<22}"
-                     f"{r['calls']:>7,} · {ms(r['avg_ms'])}"
-                     for i, r in enumerate(top, 1)]
+            panel = self.query_one("#dash-tools", Static)
+            budget = (panel.size.width or 41) - 1
+            calls = [f"{r['calls']:,}" for r in top]
+            spans = [ms(r["avg_ms"]) for r in top]
+            call_w = max(len(c) for c in calls)
+            span_w = max(len(s) for s in spans)
+            name_w = max(8, budget - (call_w + span_w + 6))
+            lines = [f"{i}. {clip(r['tool_name'], name_w):<{name_w}}"
+                     f"{c:>{call_w}} · {s:>{span_w}}"
+                     for i, (r, c, s) in enumerate(zip(top, calls, spans), 1)]
             self.query_one("#dash-tools", Static).update("\n".join(lines))
 
         @staticmethod
