@@ -500,6 +500,25 @@ def test_the_project_ledger_takes_the_height_the_rows_leave(tracker, clock):
             "the ledger never took the spare height")
         assert note.region.bottom == box.region.bottom, (
             "the ledger did not reach the bottom of the box")
+        # The fit is re-run when the box itself resizes: the app's resize event
+        # arrives before the box is laid out at its new height, so a fit
+        # measured there would use the previous window's spare.
+        await pilot.resize_terminal(160, 60)
+        await pilot.pause()
+        await pilot.pause()
+        assert box.max_scroll_y == 0
+        assert note.region.bottom == box.region.bottom, (
+            "growing the terminal left the ledger behind")
+        await pilot.resize_terminal(120, 20)
+        await pilot.pause()
+        await pilot.pause()
+        assert box.max_scroll_y > 0, "shrinking the terminal did not scroll"
+        await pilot.resize_terminal(120, 45)
+        await pilot.pause()
+        await pilot.pause()
+        assert box.max_scroll_y == 0
+        assert note.region.bottom == box.region.bottom, (
+            "the ledger did not take the height back")
 
     async def short(pilot, app):
         box = app.query_one("#dash-box")

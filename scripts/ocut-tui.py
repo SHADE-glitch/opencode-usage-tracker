@@ -1596,6 +1596,24 @@ if HAVE_TEXTUAL:
                            Static(value, classes="call-value"))
                 for label, value in _call_detail_rows(row))
 
+    class DashBox(Vertical):
+        """The Dashboard's scrolling stack.
+
+        It re-fits the project ledger when its own height changes. The app's
+        resize event arrives before this box is laid out at the new height, so
+        a fit measured there would use the previous window's spare.
+        """
+
+        def on_resize(self, event) -> None:  # textual.events.Resize
+            try:
+                app = self.app
+            except Exception:  # not mounted yet
+                return
+            fit = getattr(app, "_fit_dashboard", None)
+            if fit is not None:
+                app.call_after_refresh(fit)
+
+
     class TrackerApp(WideTableMixin, App):
         CSS = """
         #hist-title, #resp-title, #call-title { padding: 1 2; }
@@ -1773,7 +1791,7 @@ if HAVE_TEXTUAL:
                         id="filter")
             with TabbedContent(initial=self.INITIAL_TAB):
                 with TabPane("Dashboard", id="tab-dashboard"):
-                    yield Vertical(
+                    yield DashBox(
                         # Row 1: headline counts, tokens, cache totals.
                         Horizontal(
                             Vertical(
@@ -2440,7 +2458,9 @@ if HAVE_TEXTUAL:
             # event.size carries the NEW size (self.size still lags here).
             self._apply_responsive_layout(event.size.width)
             self._plan_wide_tables(event.size.width)
-            self.call_after_refresh(self._fit_dashboard)
+            # The ledger is re-fitted by DashBox.on_resize: this box is not laid
+            # out at its new height yet, so a fit measured here would use the
+            # old one.
 
         def _range_of(self, pane):
             """The window key for a pane (``None`` only if a pane has no range)."""
@@ -2646,7 +2666,7 @@ if HAVE_TEXTUAL:
             natural = 1 + table.row_count          # the header, then one row each
             above = (note.size.height + rows[0].size.height + rows[1].size.height
                      + 3 * self.DASH_MARGIN)
-            spare = box.size.height - above - (natural + 3)   # + title + border
+            spare = box.size.height - above - (natural + 3)  # + title + border
             table.styles.min_height = natural + max(0, spare)
             # One correction pass: the sizes above are the ones the *previous*
             # layout left, so a window switch can make the first answer too
