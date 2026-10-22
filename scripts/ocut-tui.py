@@ -2603,14 +2603,8 @@ if HAVE_TEXTUAL:
                                    start_ts=start, end_ts=end)
                 projects = db.q_project_board(conn, start, end)
                 share = db.q_subagent_share(conn, start, end)
-                hourly = (start is not None
-                          and (end - start) <= 36 * 60 * 60 * 1000)
-                if hourly:
-                    calls_series = db.q_usage_hourly(conn, start, end)
-                    cost_series = db.q_usage_cost_hourly(conn, start, end)
-                else:
-                    calls_series = db.q_usage_daily(conn, start, end)
-                    cost_series = db.q_usage_cost_daily(conn, start, end)
+                calls_series = db.q_usage_daily(conn, start, end)
+                cost_series = db.q_usage_cost_daily(conn, start, end)
             except sqlite3.Error as e:
                 # e.g. an un-migrated DB where the newer columns are missing.
                 self.query_one("#dash-note", Static).update(
@@ -2624,8 +2618,7 @@ if HAVE_TEXTUAL:
             self._render_dashboard_models(models)
             self._render_dashboard_tools(tools)
             self._render_dashboard_projects(projects)
-            self._render_dashboard_activity(calls_series, cost_series, start, end,
-                                            hourly=hourly)
+            self._render_dashboard_activity(calls_series, cost_series, start, end)
             if not any(kpi.values()) and not (s["requests"] or 0):
                 self.query_one("#dash-note", Static).update(
                     "No data in this window — widen the range above.")
@@ -2760,48 +2753,32 @@ if HAVE_TEXTUAL:
                 out.append(self._SPARK[level])
             return "".join(out)
 
-        def _render_dashboard_activity(self, calls_rows, cost_rows, start, end,
-                                       hourly=False) -> None:
-            """Two sparklines over one shared time axis — hours or local days.
+        def _render_dashboard_activity(self, calls_rows, cost_rows, start, end):
+            """Two sparklines over one shared axis of local calendar days.
 
-            The bucket count is bounded by the panel's own width. A Today window
-            used to draw a single mark labelled "peak 13,090/day"; an all-time
-            window drew more marks than the panel had cells and wrapped. Hours are
-            the useful granularity inside a day, and longer ranges are grouped into
-            equal buckets so the shape still fits. The cost series answers "when
-            did it burn", which a call count cannot.
+            The base bucket is one day, so a Today window is a single mark rather
+            than 24 hourly ones. When the window has more days than the panel has
+            cells, neighbouring days are grouped into equal ranges so the shape
+            still fits instead of wrapping. The cost series answers "when did it
+            burn", which a call count cannot.
             """
             now = self._now_ms() if end is None else end
             end_dt = datetime.fromtimestamp(now / 1000)
-            if hourly:
-                start_dt = (datetime.fromtimestamp(start / 1000)
-                            if start is not None
-                            else end_dt - timedelta(hours=23))
-                start_dt = start_dt.replace(minute=0, second=0, microsecond=0)
-                end_dt = end_dt.replace(minute=0, second=0, microsecond=0)
-                keys, d = [], start_dt
-                while d <= end_dt:
-                    keys.append(d.strftime("%Y-%m-%d %H:00"))
-                    d += timedelta(hours=1)
-                counts = {r["hour"]: r["calls"] for r in calls_rows}
-                costs = {r["hour"]: r["cost"] for r in cost_rows}
-                base_unit = "hour"
+            end_day = end_dt.date()
+            if start is not None:
+                start_day = datetime.fromtimestamp(start / 1000).date()
+            elif calls_rows:
+                start_day = datetime.strptime(calls_rows[0]["day"], "%Y-%m-%d").date()
             else:
-                end_day = end_dt.date()
-                if start is not None:
-                    start_day = datetime.fromtimestamp(start / 1000).date()
-                elif calls_rows:
-                    start_day = datetime.strptime(calls_rows[0]["day"], "%Y-%m-%d").date()
-                else:
-                    start_day = end_day
-                days, d = [], start_day
-                while d <= end_day:
-                    days.append(d)
-                    d += timedelta(days=1)
-                keys = [day.isoformat() for day in days]
-                counts = {r["day"]: r["calls"] for r in calls_rows}
-                costs = {r["day"]: r["cost"] for r in cost_rows}
-                base_unit = "day"
+                start_day = end_day
+            days, d = [], start_day
+            while d <= end_day:
+                days.append(d)
+                d += timedelta(days=1)
+            keys = [day.isoformat() for day in days]
+            counts = {r["day"]: r["calls"] for r in calls_rows}
+            costs = {r["day"]: r["cost"] for r in cost_rows}
+            base_unit = "day"
 
             try:
                 cap = max(12, self.query_one("#dash-activity").size.width or 44)
@@ -2813,7 +2790,7 @@ if HAVE_TEXTUAL:
                 labels = [g[0] for g in groups]
                 series = [sum(counts.get(k, 0) for k in g) for g in groups]
                 cost_series = [sum(costs.get(k) or 0 for k in g) for g in groups]
-                unit = f"{bucket}{base_unit[0]}"      # 2d / 3h
+                unit = f"{bucket}{base_unit[0]}"      # 2d
             else:
                 labels = keys
                 series = [counts.get(k, 0) for k in keys]
@@ -2821,9 +2798,6 @@ if HAVE_TEXTUAL:
                 unit = base_unit
 
             def edge(key: str) -> str:
-                if hourly:
-                    return (key[5:] if keys and keys[0][:10] != keys[-1][:10]
-                            else key[11:])
                 return key[5:]
 
             title = f"Calls per {unit}"

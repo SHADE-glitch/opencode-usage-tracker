@@ -2288,34 +2288,6 @@ def q_usage_cost_daily(conn, start_ts=None, end_ts=None):
     ).fetchall()
 
 
-def q_usage_hourly(conn, start_ts=None, end_ts=None):
-    """Tool-call counts per LOCAL clock hour — the Today trend's buckets.
-
-    The daily series is one bucket wide on a one-day window, which drew a single
-    block and told the reader nothing. Hours are the useful granularity there.
-    """
-    where, params = _time_filter(start_ts, end_ts, col="ts")
-    return conn.execute(
-        "SELECT strftime('%Y-%m-%d %H:00', ts / 1000, 'unixepoch',"
-        " 'localtime') AS hour, COUNT(*) AS calls"
-        f" FROM tool_calls{where}"
-        " GROUP BY hour ORDER BY hour",
-        params,
-    ).fetchall()
-
-
-def q_usage_cost_hourly(conn, start_ts=None, end_ts=None):
-    """Model-step cost per LOCAL clock hour, aligned with `q_usage_hourly`."""
-    where, params = _time_filter(start_ts, end_ts)
-    return conn.execute(
-        "SELECT strftime('%Y-%m-%d %H:00', ts / 1000, 'unixepoch',"
-        " 'localtime') AS hour, SUM(cost) AS cost"
-        f" FROM model_calls{where}"
-        " GROUP BY hour ORDER BY hour",
-        params,
-    ).fetchall()
-
-
 def q_sessions(conn, limit=30, start_ts=None, end_ts=None):
     """Recent sessions, newest first — the `ocut sessions` report.
 

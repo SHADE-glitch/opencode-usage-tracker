@@ -222,10 +222,12 @@ token totals, each label printed beside its number:
 | Cache | `Cache hit`, `Cache miss`, `Cache write` |
 | Runtime | `Completed`, `Failed`, `Running`, `Avg tool time`, `Sessions`, `Projects`, `Subagents` |
 
-Below those sit the `Top models` and `Top tools` leaderboards, a `Calls per day` trend
-(the cost series rides under it on the same local days, because a cheap-call day and an
-expensive one read identically as call counts), and a **Projects** board with requests,
-usage, cost, sessions and last use per project. `Plugins` counts the distinct plugins the
+Below those sit the `Top models` and `Top tools` leaderboards, a `Calls per day` trend,
+and a **Projects** board with requests, usage, cost, sessions and last use per project.
+The trend's base unit is one local day — a Today window is a single mark, never 24 hourly
+ones; a window with more days than the panel has cells groups equal day ranges to fit.
+The cost series rides under it on the same days, because a cheap-call day and an
+expensive one read identically as call counts. `Plugins` counts the distinct plugins the
 optional hook recorded in the window — a passive reader has no evidence a plugin or
 command ran unless the hook wrote it (M3). `Cost` is OpenCode's own per-step price, the
 slot credits occupy on the sibling trackers; OpenCode records no credits to show instead.

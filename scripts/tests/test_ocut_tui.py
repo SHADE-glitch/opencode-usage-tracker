@@ -460,6 +460,21 @@ def test_the_window_changes_what_the_dashboard_counts(tracker, clock):
     conn.close()
 
 
+def test_the_dashboard_trend_is_per_local_day_even_for_today(tracker, clock):
+    """One mark per local day — a Today window is never 24 clock-hour buckets."""
+    async def body(pilot, app):
+        app.tab_range["tab-dashboard"] = "1d"
+        app._refresh_active_tab()
+        await pilot.pause(0.6)
+        title = str(app.query_one("#dash-activity-title").content)
+        assert title == "Calls per day", title
+        drawn = str(app.query_one("#dash-activity").content).strip()
+        assert len(drawn) == 1, f"Today must draw one mark, got {drawn!r}"
+        axis = str(app.query_one("#dash-activity-axis").content)
+        assert "/day" in axis and "/hour" not in axis, axis
+    drive(lambda: tui.TrackerApp(str(tracker), clock=clock), body)
+
+
 def test_token_panels_print_the_hosts_own_step_numbers(tracker, clock):
     """The Tokens panel sums `model_calls` — the per-step granularity, not the rollup.
 

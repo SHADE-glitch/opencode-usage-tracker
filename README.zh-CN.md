@@ -200,9 +200,11 @@ TUI 只在打开时同步一次，之后仅由 `r` 或切换 tab 触发重载，
 | Cache | `Cache hit`、`Cache miss`、`Cache write` |
 | Runtime | `Completed`、`Failed`、`Running`、`Avg tool time`、`Sessions`、`Projects`、`Subagents` |
 
-下面坐着 `Top models`、`Top tools` 两个排行榜，一张 `Calls per day` 趋势图（同一批本地日子
-下面再画一条 cost 序列，因为便宜调用多的一天和贵的一天，在调用计数里长得一模一样），以及
-一块 **Projects** 面板：每个项目的请求数、usage、cost、会话数与最近使用。
+下面坐着 `Top models`、`Top tools` 两个排行榜，一张 `Calls per day` 趋势图，以及一块
+**Projects** 面板：每个项目的请求数、usage、cost、会话数与最近使用。趋势图的基本单位是
+本地自然日——Today 窗口只有一格，不会变成 24 个小时格；日子多到面板放不下时，按等长的
+日期段合并。同一批本地日子下面再画一条 cost 序列，因为便宜调用多的一天和贵的一天，在调用
+计数里长得一模一样。
 `Plugins` 数的是该窗口内可选 hook 记到的不同插件数——除非 hook 写了东西，被动读取器没有
 任何证据说明某个插件或命令真的跑过（M3）。`Cost` 来自 OpenCode 自己的每步价格，占的是兄弟
 项目里 credits 的位置；OpenCode 没有 credits 可显示。
