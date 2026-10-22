@@ -2394,10 +2394,11 @@ if HAVE_TEXTUAL:
             # does not wrap inside a quarter-width panel at 120+ columns.
             return f"[dim]{label:<12}[/dim]{value:>12}"
 
-        # Below this width the panels stack instead of sitting side by side:
-        # each column needs ~28 cells for a 24-char panel line plus
-        # border/padding, so 4 x 28 = 112.
-        COMPACT_WIDTH = 150
+        # Below this width the panels go two-up instead of three-up. The bound is
+        # the longest dashboard line (40 cells: a leaderboard row), plus 2 border
+        # and 2 padding, times three, plus the pane's own padding — so 140 columns
+        # still fits three panels and 139 does not.
+        COMPACT_WIDTH = 140
         # A panel line is 24 columns of content plus 2 border and 2 padding, so a
         # two-up cell needs 28. Measured: the panels region is 2 cells narrower
         # than the terminal, so two columns stop fitting below 60.
@@ -2690,8 +2691,11 @@ if HAVE_TEXTUAL:
             if not top:
                 self.query_one("#dash-models", Static).update("nothing in this window")
                 return
-            lines = [f"{i}. {clip(r['model'], 22):<22}"
-                     f"{fmt_compact_n(self._row_usage_total(r)):>8}"
+            # 20 + 7 + 1 + 5 + 4 = 40 inside the border, so three panels still
+            # fit one row at 140 columns; at 43 the "req" wrapped onto its own
+            # line and the ranking read as broken.
+            lines = [f"{i}. {clip(r['model'], 20):<20}"
+                     f"{fmt_compact_n(self._row_usage_total(r)):>7}"
                      f" {r['requests']:>5} req"
                      for i, r in enumerate(top, 1)]
             self.query_one("#dash-models", Static).update("\n".join(lines))
