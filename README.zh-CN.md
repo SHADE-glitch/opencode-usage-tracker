@@ -191,20 +191,18 @@ TUI 只在打开时同步一次，之后仅由 `r` 或切换 tab 触发重载，
 **📅 Custom…** 打开日历选任意区间。自定义窗口会让 Select 显示 `Custom…`，按钮上标明区间；
 取消选择器会重新显示当前 tab 实际使用的窗口。`d` 打开同一个日历。每个 tab 记住自己的选择。
 
-**Dashboard** 是四行面板。第一行是头条计数与 token 合计，每个标签都印在它的数字旁边：
+**Dashboard** 是三行面板。第一行是头条计数与 token 合计，每个标签都印在它的数字旁边：
 
 | 面板 | 标签 |
 |---|---|
 | Usage | `Requests`、`Cost`、`Sessions`、`Projects`、`Tool calls`、`Skills`、`Agents`、`MCP`、`Plugins` |
-| Tokens | `Usage Total`、`Input`、`Output`、`API Total`、`Cache hit rate` |
+| Tokens | `Usage Total`、`Input`、`Output`、`Cache hit rate` |
 | Cache | `Cache hit`、`Cache miss`、`Cache write` |
-| Runtime | `Completed`、`Failed`、`Running`、`Avg tool time`、`Sessions`、`Projects`、`Subagents` |
 
-下面坐着 `Top models`、`Top tools` 两个排行榜，一张 `Calls per day` 趋势图，以及一块
-**Projects** 面板：每个项目的请求数、usage、cost、会话数与最近使用。趋势图的基本单位是
-本地自然日——Today 窗口只有一格，不会变成 24 个小时格；日子多到面板放不下时，按等长的
-日期段合并。同一批本地日子下面再画一条 cost 序列，因为便宜调用多的一天和贵的一天，在调用
-计数里长得一模一样。
+下面坐着 `Top models`、`Top tools` 两个排行榜，以及一块 **Projects** 面板：每个项目的
+请求数、usage、cost、会话数与最近使用。面板随内容长高，整屏放不下后窗格开始滚动，项目列表
+不会被截断。原先第四行的 Runtime 面板和 `Calls per day` 趋势图已移除：失败/运行中计数在
+Tools tab 里由同一批行算出，按天历史是 Usage 页窗口的本职。
 `Plugins` 数的是该窗口内可选 hook 记到的不同插件数——除非 hook 写了东西，被动读取器没有
 任何证据说明某个插件或命令真的跑过（M3）。`Cost` 来自 OpenCode 自己的每步价格，占的是兄弟
 项目里 credits 的位置；OpenCode 没有 credits 可显示。
@@ -512,9 +510,9 @@ ocut vacuum            # 压缩文件，并报告回收回来多少
   `tokens.cache.write`（v1 是 `step-finish`，v2 是 assistant 的 `tokens`）。这些标签照搬姊妹项目
   CodeBuddy 的 TUI，所以这是一次**重新标注**，不是新的测量值：`Cache miss` 就是那段未命中缓存的输入，
   `Cache hit` 是缓存读取量，`Input` 是三者之和（完整 prompt），`Usage Total` 是仅供展示的
-  `Input + Output + cache hit`。`API Total` 仍是宿主自己的 step 总计；这些派生数字要与它并排看，
-  绝不代替它。v2 不发送 step 总计，所以那里的 `total_tokens` 是派生的，`total_tokens_source`
-  会写明这一点。
+  `Input + Output + cache hit`。它是所有面板打印的**唯一** token 总计；宿主自己的 step 总计
+  仍然存储、仍然在单次调用详情屏上以「reported total」出现，但不再作为第二个并排的竞争总计。
+  v2 不发送 step 总计，所以那里的 `total_tokens` 是派生的，`total_tokens_source` 会写明这一点。
 - **M14** `state` 列在没有相反**没有证据**时读作 `installed`，在 Plugins 页上这就是它的含义。那一页的
   用量只有那个可选的 hook 会写（M3），所以「装了、hook 什么也没记到」的插件，与「装了、从没被碰过」的
   插件拿到的是同一个标签。这个标签刻意只讲 inventory 行，不讲用量：这一列里没有任何一个字在说

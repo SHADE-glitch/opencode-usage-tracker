@@ -212,25 +212,25 @@ the calendar for an arbitrary span. A custom window reads `Custom…` in the Sel
 and names its span on the button; cancelling the picker restores the preset. `d`
 opens the same calendar. Each tab remembers its own choice.
 
-The **Dashboard** is four rows of panels. The first row is the headline counts and the
+The **Dashboard** is three rows of panels. The first row is the headline counts and the
 token totals, each label printed beside its number:
 
 | Panel | Labels |
 |---|---|
 | Usage | `Requests`, `Cost`, `Sessions`, `Projects`, `Tool calls`, `Skills`, `Agents`, `MCP`, `Plugins` |
-| Tokens | `Usage Total`, `Input`, `Output`, `API Total`, `Cache hit rate` |
+| Tokens | `Usage Total`, `Input`, `Output`, `Cache hit rate` |
 | Cache | `Cache hit`, `Cache miss`, `Cache write` |
-| Runtime | `Completed`, `Failed`, `Running`, `Avg tool time`, `Sessions`, `Projects`, `Subagents` |
 
-Below those sit the `Top models` and `Top tools` leaderboards, a `Calls per day` trend,
-and a **Projects** board with requests, usage, cost, sessions and last use per project.
-The trend's base unit is one local day — a Today window is a single mark, never 24 hourly
-ones; a window with more days than the panel has cells groups equal day ranges to fit.
-The cost series rides under it on the same days, because a cheap-call day and an
-expensive one read identically as call counts. `Plugins` counts the distinct plugins the
-optional hook recorded in the window — a passive reader has no evidence a plugin or
-command ran unless the hook wrote it (M3). `Cost` is OpenCode's own per-step price, the
-slot credits occupy on the sibling trackers; OpenCode records no credits to show instead.
+Below those sit the `Top models` and `Top tools` leaderboards, then a **Projects** board
+with requests, usage, cost, sessions and last use per project. The board grows with its
+rows and the pane scrolls once the screen is full, so a project list longer than the
+terminal is reachable rather than truncated. A Runtime panel and a `Calls per day` trend
+used to take the fourth row; both were removed — the failures and running count are on
+the Tools tab, computed from the same rows, and the per-day history is what the Usage
+page's window is for. `Plugins` counts the distinct plugins the optional hook recorded in
+the window — a passive reader has no evidence a plugin or command ran unless the hook
+wrote it (M3). `Cost` is OpenCode's own per-step price, the slot credits occupy on the
+sibling trackers; OpenCode records no credits to show instead.
 
 The **Tools / Skills / Agents / Plugins / MCP / Tokens** tabs are one row per entity.
 Each starts with the rows that were **used in that tab's own window**; `a` toggles the full
@@ -597,9 +597,11 @@ detail in [§9](README.zh-CN.md#known-limitations).
   mirror the sibling CodeBuddy tracker, so this is a **re-labelling**, not new
   measurements — `Cache miss` is the uncached input, `Cache hit` is the cache read,
   `Input` is all three added (the full prompt), and `Usage Total` is the display-only
-  `Input + Output + cache hit`. `API Total` stays the host's own step total; read the
-  derived numbers beside it, never instead of it. v2 sends no step total, so
-  `total_tokens` is derived there and `total_tokens_source` says so.
+  `Input + Output + cache hit`. It is the only token total any panel prints; the host's
+  own step total is still stored and still named on the single-call screen (`reported
+  total`), but it is no longer offered as a second, competing total beside the one the
+  reader is meant to use. v2 sends no step total, so `total_tokens` is derived there and
+  `total_tokens_source` says so.
 - **M14** The `state` column reads `installed` when there is **no evidence** to the
   contrary, and that is what it means on the Plugins tab. Usage there is written only by
   the optional hook (M3), so an installed plugin whose hook has recorded nothing carries

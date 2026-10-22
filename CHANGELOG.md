@@ -1835,3 +1835,54 @@ Cost     One behaviour change at the launcher: `ocut --help` still prints the co
          `ocut <route> --help` no longer does. Nothing reads the header from a subcommand.
 
 Commit   0f51b65
+
+### D-087 · 2026-10-22 · fix
+Symptom  The footer never listed the key that opens a row. Textual binds `enter` on
+         `DataTable` with `show=False`, so the focused table's own binding won
+         `active_bindings` and hid every other `enter`; an app-level binding could not fix it.
+Change   A two-line `Table(DataTable)` subclass re-declares the same `select_cursor` action
+         under a visible name, used only by the tables whose rows open something (the
+         entity tabs and the two drill-down screens). `dash-projects` and `t-usage` carry no
+         row key and stay plain, so the footer never advertises a dead key.
+Evidence 2026-10-22: the footer test reads `active_bindings` per tab — `("enter", "Open")`
+         absent on the Dashboard and on `t-usage`, present on an entity tab. Suite green.
+Cost     A table is now `Table` or `DataTable` by hand, and the wrong choice is silent in
+         both directions. The registration guard counts both classes; the choice itself is
+         not machine-checked.
+Commit   a327c60
+
+### D-088 · 2026-10-22 · taste
+Symptom  Two unlabelled token totals on one screen: the Usage and Tokens tables, the
+         response list and the response summary each carried an "API Total" beside the
+         Usage Total, and the dashboard ranked Top models by a number no column printed.
+Change   One token total everywhere. The API Total column is gone from both tables, the
+         response list and the response header; the host's own per-step total stays on the
+         single-call screen as "reported total". `q_usage_model_stats` gains
+         `usage_total_tokens` in its SELECT and a whitelisted ordering, and defaults to it,
+         so the rollup and the panels share one number.
+Evidence 2026-10-22: `test_one_token_total_and_no_api_total`-style column assertions on the
+         Tokens tab, the response-row shape test (cell order without the API column), and
+         the readme guard now asserts the label is absent. Suite green (383 tests).
+Cost     The per-row total is still stored and no longer visible in a list; a reader who
+         wants the provider's own figure opens the single-call screen, where it is named by
+         provenance.
+Commit   b54aa41
+
+### D-089 · 2026-10-22 · taste
+Symptom  The dashboard spent a whole row on Runtime (completed/failed/running, average
+         tool time, sessions, projects, subagents) and another on a Calls-per-day trend,
+         both of which restated figures the Tools tab and the Usage page already compute
+         from the same rows; the project board sat in a fixed-height panel where a tenth
+         project was silently invisible.
+Change   The Runtime panel and the trend are removed and the dashboard re-flows into three
+         rows (headline counts · leaderboards · project board). The board's panel is
+         `height: auto` inside the scrolling `#dash-box`, so it takes the height its rows
+         need and the pane scrolls once the screen is full.
+Evidence 2026-10-22: the absence test enumerates the removed ids (`#dash-activity*`,
+         `#dash-cost*`, `#dash-rt-*`) and pins the three `.dash-row` ids; the project-board
+         test reads `height.unit == Unit.AUTO` and `overflow_y == "auto"`. Suite green
+         (383 tests).
+Cost     Failures/running are one keystroke further (Tools) and the per-day shape is visible
+         only through window changes. In exchange every dashboard row answers the window it
+         is set to.
+Commit   b54aa41
