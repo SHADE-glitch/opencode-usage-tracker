@@ -1,0 +1,1063 @@
+{
+  "schema_version": 1,
+  "name": "cross-repo-usage-golden",
+  "purpose": "One fixed input set, three independent trackers. The Usage Total expression and the date/window parsing were copied verbatim between codebuddy-usage-tracker (cbut), opencode-usage-tracker (ocut) and qoder-cn-usage-tracker (qcut) and then maintained separately; the NULL semantics have already drifted once (all-usage-trackers audit P1-12 / P2-17). This file pins what each repo's own code must compute for the same inputs, so a future drift fails a test instead of shipping. Expected values follow each repo's own documented definition (its README and the comments beside the expression), not the current implementation: where an implementation disagrees with its documentation, the test fails and the disagreement is reported, never smoothed over by editing either side.",
+  "canonical_copy": "all-usage-trackers/scripts/tests/fixtures/cross_repo_golden.json",
+  "copies": [
+    "codebuddy-usage-tracker/scripts/tests/fixtures/cross_repo_golden.json",
+    "opencode-usage-tracker/scripts/tests/fixtures/cross_repo_golden.json",
+    "qoder-cn-usage-tracker/scripts/tests/fixtures/cross_repo_golden.json"
+  ],
+  "update_procedure": "Edit the canonical copy, then copy it byte-for-byte over the three per-repo copies and update the CANONICAL_SHA256 constant in each repo's test_cross_repo_golden.py. The digest pin is what makes a unilateral edit to one repo's copy fail that repo's own suite. The copies are per-repo (rather than one shared file read through a relative path) because each repository's CI checks out only itself; a sibling-relative read would be red on every runner.",
+  "repos": {
+    "cbut": {
+      "module": "cbut_db",
+      "table": "model_responses",
+      "key_column": "message_id",
+      "provider_column": "provider",
+      "provider_display": "_PROVIDER_DISPLAY_EXPR: COALESCE(provider, 'builtin')",
+      "columns": {
+        "input_full": "prompt_tokens",
+        "output": "completion_tokens",
+        "cache_hit": "prompt_cache_hit_tokens",
+        "cache_write": null,
+        "usage_flag": "usage_available"
+      },
+      "input_full_mapping": "prompt_tokens IS the whole prompt (prompt = hit + miss + write), so input_full maps straight onto prompt_tokens and cache_hit onto prompt_cache_hit_tokens.",
+      "usage_total_definition": "Usage Total = prompt + completion + COALESCE(cache hit, 0); NULL when either token part is missing (README: 'a display-only Input + Output + cache hit ... Fields absent from a response are shown as -, never as a fabricated 0').",
+      "surfaces": {
+        "per_row_sql": "cbut_db._USAGE_TOTAL_EXPR",
+        "window_aggregate": "q_usage_summary(conn, start, end)['usage_total_tokens']",
+        "model_rollup": "q_usage_model_stats(conn, start, end)"
+      }
+    },
+    "ocut": {
+      "module": "ocut_db",
+      "table": "model_calls",
+      "key_column": "call_id",
+      "provider_column": "provider",
+      "provider_display": "provider as stored",
+      "columns": {
+        "input_full_uncached": "prompt_tokens",
+        "output": "completion_tokens",
+        "cache_hit": "cache_read",
+        "cache_write": "cache_write",
+        "usage_flag": "usage_available"
+      },
+      "input_full_mapping": "OpenCode reports an UNCACHED prompt_tokens with cache_read/cache_write beside it, and its documented Input is all three added (README M13). So input_full maps as prompt_tokens = input_full - COALESCE(cache_hit,0) - COALESCE(cache_write,0), with cache_read = cache_hit and cache_write as given.",
+      "usage_total_definition": "Usage Total = COALESCE(prompt,0) + completion + 2*COALESCE(cache_read,0) + COALESCE(cache_write,0) = (prompt + read + write) + completion + read; NULL only when completion is missing, or when every prompt part is missing. A partly reported row still contributes (ocut_db.py: 'Anything else contributes, so a partly-reported row is not dropped').",
+      "surfaces": {
+        "per_row_sql": "ocut_db._USAGE_TOTAL_EXPR",
+        "per_row_python": "ocut-tui._usage_total_tokens(prompt, completion, cache_read, cache_write)",
+        "window_aggregate": "sum of usage_total_tokens over q_usage_model_stats(conn, start, end) rows (ocut's q_usage_summary deliberately does not surface Usage Total)",
+        "model_rollup": "q_usage_model_stats(conn, start, end)"
+      }
+    },
+    "qcut": {
+      "module": "qcut_db",
+      "table": "model_calls",
+      "key_column": "message_id",
+      "provider_column": "provider",
+      "provider_display": "provider as stored",
+      "columns": {
+        "input_full": "input_tokens",
+        "output": "output_tokens",
+        "cache_hit": "cache_read_tokens",
+        "cache_write": null,
+        "usage_flag": "has_usage"
+      },
+      "input_full_mapping": "input_tokens IS the whole prompt (cache_read_tokens is a subset of it), so input_full maps straight onto input_tokens and cache_hit onto cache_read_tokens.",
+      "usage_total_definition": "Usage Total = input + output + COALESCE(cache read, 0); NULL when either token part is missing (README: 'Usage Total is input + output + cache hit by the family's definition').",
+      "surfaces": {
+        "per_row_sql": "qcut_db._USAGE_TOTAL_EXPR",
+        "window_aggregate": "q_usage_summary(conn, start, end)['usage_total_tokens']",
+        "model_rollup": "q_usage_model_stats(conn, start, end)"
+      }
+    }
+  },
+  "abstract_fields": {
+    "input_full": "the whole prompt the model saw (cbut prompt_tokens; qcut input_tokens; ocut prompt+cache_read+cache_write)",
+    "output": "the completion (cbut completion_tokens; ocut completion_tokens; qcut output_tokens)",
+    "cache_hit": "the cached-read part that Usage Total re-adds (cbut prompt_cache_hit_tokens; ocut cache_read; qcut cache_read_tokens)",
+    "cache_write": "the cache-write part, a column only ocut has; null elsewhere",
+    "reports_usage": "whether the response reported usage at all: maps to cbut/ocut usage_available and qcut has_usage; false only for the all-NULL row"
+  },
+  "usage_total": {
+    "anchor_day": "2026-10-25",
+    "now": "2026-10-25T23:30:00",
+    "provider": "fixture-vendor",
+    "note": "Every row below is inserted into each repo's own table through the column map in 'repos'. 'expect' holds the per-row Usage Total each repo's own code must return: cbut and qcut require both token parts (NULL when either is missing), ocut keeps a partly-reported row and is NULL only without a completion or without any prompt part at all. u4 is the one shape where that documented difference shows.",
+    "rows": [
+      {
+        "id": "u1",
+        "meaning": "every part reported: a full prompt, an output, and a cache hit",
+        "model": "step-3",
+        "input_full": 100,
+        "output": 20,
+        "cache_hit": 80,
+        "cache_write": null,
+        "reports_usage": true,
+        "ts": "2026-10-25T10:00:00",
+        "expect": {
+          "cbut": 200,
+          "ocut": 200,
+          "qcut": 200
+        }
+      },
+      {
+        "id": "u2",
+        "meaning": "token parts reported, every cache column absent (a missing cache column contributes 0, never NULL)",
+        "model": "step-3",
+        "input_full": 100,
+        "output": 20,
+        "cache_hit": null,
+        "cache_write": null,
+        "reports_usage": true,
+        "ts": "2026-10-25T11:00:00",
+        "expect": {
+          "cbut": 120,
+          "ocut": 120,
+          "qcut": 120
+        }
+      },
+      {
+        "id": "u3",
+        "meaning": "output missing while prompt and cache hit are present",
+        "model": "step-3",
+        "input_full": 100,
+        "output": null,
+        "cache_hit": 80,
+        "cache_write": null,
+        "reports_usage": true,
+        "ts": "2026-10-25T12:00:00",
+        "expect": {
+          "cbut": null,
+          "ocut": null,
+          "qcut": null
+        }
+      },
+      {
+        "id": "u4",
+        "meaning": "prompt missing while output and cache hit are present (the one shape where the three repos diverge)",
+        "model": "step-3",
+        "input_full": null,
+        "output": 20,
+        "cache_hit": 80,
+        "cache_write": null,
+        "reports_usage": true,
+        "ts": "2026-10-25T13:00:00",
+        "expect": {
+          "cbut": null,
+          "ocut": 180,
+          "qcut": null
+        }
+      },
+      {
+        "id": "u5",
+        "meaning": "prompt missing and no cache columns: only the output was reported",
+        "model": "step-3",
+        "input_full": null,
+        "output": 20,
+        "cache_hit": null,
+        "cache_write": null,
+        "reports_usage": true,
+        "ts": "2026-10-25T14:00:00",
+        "expect": {
+          "cbut": null,
+          "ocut": null,
+          "qcut": null
+        }
+      },
+      {
+        "id": "u6",
+        "meaning": "only the cache hit was reported; both token parts are absent",
+        "model": "step-3",
+        "input_full": null,
+        "output": null,
+        "cache_hit": 80,
+        "cache_write": null,
+        "reports_usage": true,
+        "ts": "2026-10-25T15:00:00",
+        "expect": {
+          "cbut": null,
+          "ocut": null,
+          "qcut": null
+        }
+      },
+      {
+        "id": "u7",
+        "meaning": "nothing reported at all (a BYOK / credits-only row): no token column carries a value",
+        "model": "step-3",
+        "input_full": null,
+        "output": null,
+        "cache_hit": null,
+        "cache_write": null,
+        "reports_usage": false,
+        "ts": "2026-10-25T16:00:00",
+        "expect": {
+          "cbut": null,
+          "ocut": null,
+          "qcut": null
+        }
+      },
+      {
+        "id": "u8",
+        "meaning": "every part reported as a real zero (a measured 0 is a claim, not a NULL)",
+        "model": "step-3",
+        "input_full": 0,
+        "output": 0,
+        "cache_hit": 0,
+        "cache_write": null,
+        "reports_usage": true,
+        "ts": "2026-10-25T17:00:00",
+        "expect": {
+          "cbut": 0,
+          "ocut": 0,
+          "qcut": 0
+        }
+      },
+      {
+        "id": "u9",
+        "meaning": "same model under a different spelling: case is not folded anywhere",
+        "model": "Step-3",
+        "input_full": 7,
+        "output": 3,
+        "cache_hit": null,
+        "cache_write": null,
+        "reports_usage": true,
+        "ts": "2026-10-25T18:00:00",
+        "expect": {
+          "cbut": 10,
+          "ocut": 10,
+          "qcut": 10
+        }
+      },
+      {
+        "id": "u10",
+        "meaning": "model is NULL: the row keeps its tokens and forms its own rollup group",
+        "model": null,
+        "input_full": 50,
+        "output": 10,
+        "cache_hit": 0,
+        "cache_write": null,
+        "reports_usage": true,
+        "ts": "2026-10-25T19:00:00",
+        "expect": {
+          "cbut": 60,
+          "ocut": 60,
+          "qcut": 60
+        }
+      },
+      {
+        "id": "u11",
+        "meaning": "a cold request: part of the prompt is a cache write (a column only ocut has)",
+        "model": "step-3",
+        "input_full": 300,
+        "output": 40,
+        "cache_hit": 0,
+        "cache_write": 200,
+        "reports_usage": true,
+        "ts": "2026-10-25T20:00:00",
+        "expect": {
+          "cbut": 340,
+          "ocut": 340,
+          "qcut": 340
+        }
+      },
+      {
+        "id": "w1",
+        "meaning": "exactly at now: the window end is exclusive, so this row is in NO window, not even all-time",
+        "model": "step-3",
+        "input_full": 100,
+        "output": 20,
+        "cache_hit": 80,
+        "cache_write": null,
+        "reports_usage": true,
+        "ts": "2026-10-25T23:30:00",
+        "expect": {
+          "cbut": 200,
+          "ocut": 200,
+          "qcut": 200
+        }
+      },
+      {
+        "id": "w2",
+        "meaning": "one millisecond before now: inside every window",
+        "model": "step-3",
+        "input_full": 100,
+        "output": 20,
+        "cache_hit": 80,
+        "cache_write": null,
+        "reports_usage": true,
+        "ts": "2026-10-25T23:29:59.999",
+        "expect": {
+          "cbut": 200,
+          "ocut": 200,
+          "qcut": 200
+        }
+      },
+      {
+        "id": "w3",
+        "meaning": "exactly at local midnight: the window start is inclusive",
+        "model": "step-3",
+        "input_full": 100,
+        "output": 20,
+        "cache_hit": 80,
+        "cache_write": null,
+        "reports_usage": true,
+        "ts": "2026-10-25T00:00:00",
+        "expect": {
+          "cbut": 200,
+          "ocut": 200,
+          "qcut": 200
+        }
+      },
+      {
+        "id": "w4",
+        "meaning": "one hour after local midnight: the day boundary is midnight, not an hour offset",
+        "model": "step-3",
+        "input_full": 100,
+        "output": 20,
+        "cache_hit": 80,
+        "cache_write": null,
+        "reports_usage": true,
+        "ts": "2026-10-25T01:00:00",
+        "expect": {
+          "cbut": 200,
+          "ocut": 200,
+          "qcut": 200
+        }
+      },
+      {
+        "id": "w5",
+        "meaning": "the last millisecond of the previous day: outside 1d, inside 2d",
+        "model": "step-3",
+        "input_full": 100,
+        "output": 20,
+        "cache_hit": 80,
+        "cache_write": null,
+        "reports_usage": true,
+        "ts": "2026-10-24T23:59:59.999",
+        "expect": {
+          "cbut": 200,
+          "ocut": 200,
+          "qcut": 200
+        }
+      },
+      {
+        "id": "w6",
+        "meaning": "an hour before the previous midnight: outside 1d, inside 2d",
+        "model": "step-3",
+        "input_full": 100,
+        "output": 20,
+        "cache_hit": 80,
+        "cache_write": null,
+        "reports_usage": true,
+        "ts": "2026-10-24T23:00:00",
+        "expect": {
+          "cbut": 200,
+          "ocut": 200,
+          "qcut": 200
+        }
+      },
+      {
+        "id": "w7",
+        "meaning": "exactly at the previous local midnight: the 2d start is inclusive",
+        "model": "step-3",
+        "input_full": 100,
+        "output": 20,
+        "cache_hit": 80,
+        "cache_write": null,
+        "reports_usage": true,
+        "ts": "2026-10-24T00:00:00",
+        "expect": {
+          "cbut": 200,
+          "ocut": 200,
+          "qcut": 200
+        }
+      },
+      {
+        "id": "w8",
+        "meaning": "eight days back at noon: outside 7d, inside 14d",
+        "model": "step-3",
+        "input_full": 100,
+        "output": 20,
+        "cache_hit": 80,
+        "cache_write": null,
+        "reports_usage": true,
+        "ts": "2026-10-17T12:00:00",
+        "expect": {
+          "cbut": 200,
+          "ocut": 200,
+          "qcut": 200
+        }
+      },
+      {
+        "id": "w9",
+        "meaning": "twenty-five days back at noon: outside 14d, inside 30d",
+        "model": "step-3",
+        "input_full": 100,
+        "output": 20,
+        "cache_hit": 80,
+        "cache_write": null,
+        "reports_usage": true,
+        "ts": "2026-09-30T12:00:00",
+        "expect": {
+          "cbut": 200,
+          "ocut": 200,
+          "qcut": 200
+        }
+      },
+      {
+        "id": "w10",
+        "meaning": "thirty-five days back at noon: outside 30d, inside all-time only",
+        "model": "step-3",
+        "input_full": 100,
+        "output": 20,
+        "cache_hit": 80,
+        "cache_write": null,
+        "reports_usage": true,
+        "ts": "2026-09-20T12:00:00",
+        "expect": {
+          "cbut": 200,
+          "ocut": 200,
+          "qcut": 200
+        }
+      }
+    ],
+    "windows": [
+      {
+        "key": "1d",
+        "requests": 14,
+        "usage_total": {
+          "cbut": 1330,
+          "ocut": 1510,
+          "qcut": 1330
+        },
+        "members": [
+          "u1",
+          "u2",
+          "u3",
+          "u4",
+          "u5",
+          "u6",
+          "u7",
+          "u8",
+          "u9",
+          "u10",
+          "u11",
+          "w2",
+          "w3",
+          "w4"
+        ]
+      },
+      {
+        "key": "2d",
+        "requests": 17,
+        "usage_total": {
+          "cbut": 1930,
+          "ocut": 2110,
+          "qcut": 1930
+        },
+        "members": [
+          "u1",
+          "u2",
+          "u3",
+          "u4",
+          "u5",
+          "u6",
+          "u7",
+          "u8",
+          "u9",
+          "u10",
+          "u11",
+          "w2",
+          "w3",
+          "w4",
+          "w5",
+          "w6",
+          "w7"
+        ]
+      },
+      {
+        "key": "3d",
+        "requests": 17,
+        "usage_total": {
+          "cbut": 1930,
+          "ocut": 2110,
+          "qcut": 1930
+        },
+        "members": [
+          "u1",
+          "u2",
+          "u3",
+          "u4",
+          "u5",
+          "u6",
+          "u7",
+          "u8",
+          "u9",
+          "u10",
+          "u11",
+          "w2",
+          "w3",
+          "w4",
+          "w5",
+          "w6",
+          "w7"
+        ]
+      },
+      {
+        "key": "7d",
+        "requests": 17,
+        "usage_total": {
+          "cbut": 1930,
+          "ocut": 2110,
+          "qcut": 1930
+        },
+        "members": [
+          "u1",
+          "u2",
+          "u3",
+          "u4",
+          "u5",
+          "u6",
+          "u7",
+          "u8",
+          "u9",
+          "u10",
+          "u11",
+          "w2",
+          "w3",
+          "w4",
+          "w5",
+          "w6",
+          "w7"
+        ]
+      },
+      {
+        "key": "14d",
+        "requests": 18,
+        "usage_total": {
+          "cbut": 2130,
+          "ocut": 2310,
+          "qcut": 2130
+        },
+        "members": [
+          "u1",
+          "u2",
+          "u3",
+          "u4",
+          "u5",
+          "u6",
+          "u7",
+          "u8",
+          "u9",
+          "u10",
+          "u11",
+          "w2",
+          "w3",
+          "w4",
+          "w5",
+          "w6",
+          "w7",
+          "w8"
+        ]
+      },
+      {
+        "key": "30d",
+        "requests": 19,
+        "usage_total": {
+          "cbut": 2330,
+          "ocut": 2510,
+          "qcut": 2330
+        },
+        "members": [
+          "u1",
+          "u2",
+          "u3",
+          "u4",
+          "u5",
+          "u6",
+          "u7",
+          "u8",
+          "u9",
+          "u10",
+          "u11",
+          "w2",
+          "w3",
+          "w4",
+          "w5",
+          "w6",
+          "w7",
+          "w8",
+          "w9"
+        ]
+      },
+      {
+        "key": "all",
+        "requests": 20,
+        "usage_total": {
+          "cbut": 2530,
+          "ocut": 2710,
+          "qcut": 2530
+        },
+        "members": [
+          "u1",
+          "u2",
+          "u3",
+          "u4",
+          "u5",
+          "u6",
+          "u7",
+          "u8",
+          "u9",
+          "u10",
+          "u11",
+          "w2",
+          "w3",
+          "w4",
+          "w5",
+          "w6",
+          "w7",
+          "w8",
+          "w9",
+          "w10"
+        ]
+      }
+    ],
+    "window_note": "The window is [start, end): the start (local midnight, whole calendar days back) is inclusive and the end (now) is exclusive, so w1 at exactly now is outside every preset, all-time included. 'requests' is COUNT(*) over the window from each repo's own q_usage_summary; 'usage_total' is the windowed Usage Total (see repos.*.surfaces for where each repo surfaces it). 'members' documents which rows that means.",
+    "model_groups": [
+      {
+        "model": "step-3",
+        "provider": "fixture-vendor",
+        "requests": 17,
+        "usage_total": {
+          "cbut": 2460,
+          "ocut": 2640,
+          "qcut": 2460
+        }
+      },
+      {
+        "model": "Step-3",
+        "provider": "fixture-vendor",
+        "requests": 1,
+        "usage_total": {
+          "cbut": 10,
+          "ocut": 10,
+          "qcut": 10
+        }
+      },
+      {
+        "model": null,
+        "provider": "fixture-vendor",
+        "requests": 1,
+        "usage_total": {
+          "cbut": 60,
+          "ocut": 60,
+          "qcut": 60
+        }
+      }
+    ],
+    "model_group_note": "Keyed by (model, provider) exactly as q_usage_model_stats groups them: the two spellings of the model stay separate rows (no case folding), and the NULL model is its own group, not dropped and not merged. Same all-time window as above, so w1 is outside it as well."
+  },
+  "date_parsing": {
+    "note": "The typed date/time entry is copied verbatim across the three repos (cbut_db, qcut_db and ocut_db each carry their own parse_date/parse_time/parse_datetime). Dates are month-first in the ambiguous two-field form, a leading four-digit field is the year, a two-digit trailing year uses the %y 69/70 pivot, and an am/pm marker is accepted on input while everything displays 24-hour. Expectations are local-time ISO strings (or [hour, minute]), so they hold in every timezone; 'ValueError' means the call must raise.",
+    "default_year": 2026,
+    "parse_date": [
+      {
+        "input": "10-01",
+        "expect": "2026-10-01"
+      },
+      {
+        "input": "10/1",
+        "expect": "2026-10-01"
+      },
+      {
+        "input": "10.01",
+        "expect": "2026-10-01"
+      },
+      {
+        "input": "10-1",
+        "expect": "2026-10-01"
+      },
+      {
+        "input": "2026-10-01",
+        "expect": "2026-10-01"
+      },
+      {
+        "input": "3-9",
+        "default_year": 1999,
+        "expect": "1999-03-09"
+      },
+      {
+        "input": "12-31-2026",
+        "expect": "2026-12-31"
+      },
+      {
+        "input": "10-01-69",
+        "expect": "1969-10-01"
+      },
+      {
+        "input": "10-01-70",
+        "expect": "1970-10-01"
+      },
+      {
+        "input": "not a date",
+        "expect": "ValueError"
+      },
+      {
+        "input": "13-45",
+        "expect": "ValueError"
+      },
+      {
+        "input": "2026-13-01",
+        "expect": "ValueError"
+      },
+      {
+        "input": "",
+        "expect": "ValueError"
+      },
+      {
+        "input": "10-01-2026-01",
+        "expect": "ValueError"
+      }
+    ],
+    "parse_time": [
+      {
+        "input": "21:05",
+        "expect": [
+          21,
+          5
+        ]
+      },
+      {
+        "input": "9:5 PM",
+        "expect": [
+          21,
+          5
+        ]
+      },
+      {
+        "input": "09:05PM",
+        "expect": [
+          21,
+          5
+        ]
+      },
+      {
+        "input": "9 PM",
+        "expect": [
+          21,
+          0
+        ]
+      },
+      {
+        "input": "12:00 AM",
+        "expect": [
+          0,
+          0
+        ]
+      },
+      {
+        "input": "12:00 PM",
+        "expect": [
+          12,
+          0
+        ]
+      },
+      {
+        "input": "00:00",
+        "expect": [
+          0,
+          0
+        ]
+      },
+      {
+        "input": "23:59",
+        "expect": [
+          23,
+          59
+        ]
+      },
+      {
+        "input": "12:00:00",
+        "expect": [
+          12,
+          0
+        ]
+      },
+      {
+        "input": "",
+        "expect": "ValueError"
+      },
+      {
+        "input": "   ",
+        "expect": "ValueError"
+      },
+      {
+        "input": "25:00",
+        "expect": "ValueError"
+      },
+      {
+        "input": "9:5 XM",
+        "expect": "ValueError"
+      }
+    ],
+    "parse_datetime": [
+      {
+        "date": "10-1",
+        "time": "9:5 AM",
+        "expect": "2026-10-01T09:05:00"
+      },
+      {
+        "date": "10-1",
+        "time": "",
+        "expect": "2026-10-01T00:00:00"
+      },
+      {
+        "date": "",
+        "time": "21:05",
+        "expect": null
+      },
+      {
+        "date": "  ",
+        "time": "",
+        "expect": null
+      },
+      {
+        "date": "2026-10-01",
+        "time": "12:00 PM",
+        "expect": "2026-10-01T12:00:00"
+      },
+      {
+        "date": "2-29",
+        "time": "",
+        "default_year": 2028,
+        "expect": "2028-02-29T00:00:00"
+      },
+      {
+        "date": "2-29",
+        "time": "",
+        "default_year": 2027,
+        "expect": "ValueError"
+      },
+      {
+        "date": "10-1",
+        "time": "25:00",
+        "expect": "ValueError"
+      }
+    ],
+    "parse_datetime_note": "A blank date is 'not chosen' (None), never an invented midnight; a blank time is the start of the day. Expectations are local wall-clock ISO strings compared as instants, so they hold in every timezone."
+  },
+  "window_bounds": {
+    "note": "window_bounds is copied verbatim across the three repos. A preset is a whole number of LOCAL calendar days ending at now: the start is local midnight of (now's date - (days - 1)) and the end is now itself. 'all' has no lower bound but still ends at now. Expectations are local ISO strings (naive), so they hold in every timezone; the test also asserts the end is exactly now.",
+    "now": "2026-10-25T23:30:00",
+    "cases": [
+      {
+        "key": "1d",
+        "start": "2026-10-25T00:00:00"
+      },
+      {
+        "key": "2d",
+        "start": "2026-10-24T00:00:00"
+      },
+      {
+        "key": "3d",
+        "start": "2026-10-23T00:00:00"
+      },
+      {
+        "key": "7d",
+        "start": "2026-10-19T00:00:00"
+      },
+      {
+        "key": "14d",
+        "start": "2026-10-12T00:00:00"
+      },
+      {
+        "key": "30d",
+        "start": "2026-09-26T00:00:00"
+      },
+      {
+        "key": "all",
+        "start": null
+      }
+    ]
+  },
+  "dst": {
+    "note": "The calendar-day rule is what a DST day proves: '2 days back' must land on local midnight two calendar days ago, not on now minus 48 hours (on the 2026 US spring-forward day those differ by 11 hours). These cases run with the process timezone set to America/New_York; the expectations are aware ISO strings, so they do not depend on the machine's own zone. The end-to-end windows re-run the row aggregates through each repo's own queries inside that zone, which is where a local-day boundary is actually decided.",
+    "timezone": "America/New_York",
+    "spring_forward": {
+      "date": "2026-03-08",
+      "now": "2026-03-08T12:00:00-04:00",
+      "window_bounds": [
+        {
+          "key": "1d",
+          "start": "2026-03-08T00:00:00-05:00"
+        },
+        {
+          "key": "2d",
+          "start": "2026-03-07T00:00:00-05:00"
+        }
+      ],
+      "rows": [
+        {
+          "id": "d1",
+          "ts": "2026-03-07T23:00:00",
+          "model": "step-3",
+          "input_full": 100,
+          "output": 20,
+          "cache_hit": 80,
+          "cache_write": null,
+          "reports_usage": true
+        },
+        {
+          "id": "d2",
+          "ts": "2026-03-08T01:30:00",
+          "model": "step-3",
+          "input_full": 100,
+          "output": 20,
+          "cache_hit": 80,
+          "cache_write": null,
+          "reports_usage": true
+        },
+        {
+          "id": "d3",
+          "ts": "2026-03-08T03:30:00",
+          "model": "step-3",
+          "input_full": 100,
+          "output": 20,
+          "cache_hit": 80,
+          "cache_write": null,
+          "reports_usage": true
+        },
+        {
+          "id": "d4",
+          "ts": "2026-03-08T12:00:00",
+          "model": "step-3",
+          "input_full": 100,
+          "output": 20,
+          "cache_hit": 80,
+          "cache_write": null,
+          "reports_usage": true
+        }
+      ],
+      "windows": [
+        {
+          "key": "1d",
+          "requests": 2,
+          "usage_total": {
+            "cbut": 400,
+            "ocut": 400,
+            "qcut": 400
+          }
+        },
+        {
+          "key": "2d",
+          "requests": 3,
+          "usage_total": {
+            "cbut": 600,
+            "ocut": 600,
+            "qcut": 600
+          }
+        }
+      ],
+      "row_note": "d2 sits before the 02:00 jump and d3 after it; both are the same local day, so both are inside the 1d window. d4 is exactly at now and stays outside."
+    },
+    "fall_back": {
+      "date": "2026-11-01",
+      "now": "2026-11-01T12:00:00-05:00",
+      "window_bounds": [
+        {
+          "key": "1d",
+          "start": "2026-11-01T00:00:00-04:00"
+        },
+        {
+          "key": "2d",
+          "start": "2026-10-31T00:00:00-04:00"
+        }
+      ],
+      "rows": [
+        {
+          "id": "d5",
+          "ts": "2026-11-01T00:30:00",
+          "model": "step-3",
+          "input_full": 100,
+          "output": 20,
+          "cache_hit": 80,
+          "cache_write": null,
+          "reports_usage": true
+        },
+        {
+          "id": "d6",
+          "ts": "2026-11-01T01:30:00",
+          "model": "step-3",
+          "input_full": 100,
+          "output": 20,
+          "cache_hit": 80,
+          "cache_write": null,
+          "reports_usage": true
+        },
+        {
+          "id": "d7",
+          "ts": "2026-10-31T23:30:00",
+          "model": "step-3",
+          "input_full": 100,
+          "output": 20,
+          "cache_hit": 80,
+          "cache_write": null,
+          "reports_usage": true
+        },
+        {
+          "id": "d8",
+          "ts": "2026-11-01T12:00:00",
+          "model": "step-3",
+          "input_full": 100,
+          "output": 20,
+          "cache_hit": 80,
+          "cache_write": null,
+          "reports_usage": true
+        }
+      ],
+      "windows": [
+        {
+          "key": "1d",
+          "requests": 2,
+          "usage_total": {
+            "cbut": 400,
+            "ocut": 400,
+            "qcut": 400
+          }
+        },
+        {
+          "key": "2d",
+          "requests": 3,
+          "usage_total": {
+            "cbut": 600,
+            "ocut": 600,
+            "qcut": 600
+          }
+        }
+      ],
+      "row_note": "d6 is the first pass of the repeated 01:30 hour (fold=0, EDT), the instant a naive datetime.timestamp() picks; both passes of that hour are the same local day. d8 is exactly at now and stays outside."
+    },
+    "ambiguous_hour": [
+      {
+        "date": "03-08",
+        "time": "01:30",
+        "expect": "2026-03-08T01:30:00-05:00"
+      },
+      {
+        "date": "03-08",
+        "time": "03:30",
+        "expect": "2026-03-08T03:30:00-04:00"
+      },
+      {
+        "date": "11-01",
+        "time": "01:30",
+        "expect": "2026-11-01T01:30:00-04:00"
+      }
+    ],
+    "ambiguous_hour_note": "parse_datetime must resolve the gap and the repeated hour exactly like the stdlib call it is built on: the pre-jump 01:30 is EST, the post-jump 03:30 is EDT, and the repeated 01:30 in November is the first pass (fold=0, EDT)."
+  }
+}
