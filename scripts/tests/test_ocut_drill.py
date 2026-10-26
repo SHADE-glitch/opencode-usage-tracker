@@ -435,6 +435,56 @@ def test_a_row_with_no_model_opens_only_the_steps_that_have_no_model(
     conn.close()
 
 
+def test_a_cut_list_says_how_much_of_the_window_it_shows(tmp_path, clock):
+    """Both drill-downs are capped at ``detail_limit`` and said nothing about it.
+
+    The header above them counts the whole window, so a list of 200 rows under
+    "201 requests" read as a list of all of them that happened to look short. The
+    Usage page has said ``showing N of M`` since it got a cap; these two now say
+    the same, and say nothing when the list is whole.
+    """
+    now = tui_tests.now_ms()
+    limit = tui.TrackerApp.DETAIL_LIMIT
+    host = tmp_path / "cut-host.db"
+    conn = ts_sync.make_host(host)
+    ts_sync.add_session(conn, "ses_x", tokens=(0, 0, 0, 0, 0))
+    ts_sync.add_message(conn, "msg_x", "ses_x")
+    # Five seconds back, not at "now": a window is half-open, so a row stamped
+    # exactly at its end belongs to the next one.
+    for i in range(limit + 1):             # one more than a list can hold
+        stamp = now - 5_000 - i * 1000
+        ts_sync.add_step(conn, f"prt_s_{i}", "msg_x", "ses_x", ts=stamp)
+        ts_sync.add_tool(conn, f"prt_t_{i}", "msg_x", "ses_x", tool="bash",
+                         ts=stamp)
+    conn.commit()
+    conn.close()
+    cut_db = tmp_path / "cut.db"
+    db.load_sync().run(db_path=cut_db, host_db=host,
+                       host_config=build_config(tmp_path / "cut-cfg"), quiet=True)
+
+    async def body(pilot, app):
+        await tui_tests.activate(app, pilot, "tab-tokens")
+        screen = await open_row(app, pilot, "#t-tokens", 0)
+        assert isinstance(screen, tui.ModelResponsesScreen), type(screen)
+        assert screen.query_one("#resp-table", DataTable).row_count == limit
+        summary = text_of(screen, "#resp-summary")
+        assert f"showing {limit:,} of {limit + 1:,}" in summary, summary
+        await pilot.press("escape")
+        await pilot.pause(0.4)
+
+        await tui_tests.activate(app, pilot, "tab-tools")
+        table = app.query_one("#t-tools", DataTable)
+        # The tab shows the canonical name: v1's `bash` is v2's `shell`.
+        index = next(i for i in range(table.row_count)
+                     if str(table.get_cell_at((i, 0))) == db.TOOL_CANONICAL["bash"])
+        screen = await open_row(app, pilot, "#t-tools", index)
+        assert isinstance(screen, tui.HistoryScreen), type(screen)
+        assert screen.query_one("#hist-table", DataTable).row_count == limit
+        summary = text_of(screen, "#hist-summary")
+        assert f"showing {limit:,} of {limit + 1:,}" in summary, summary
+    tui_tests.drive(make_app(cut_db, clock), body)
+
+
 def test_an_absent_field_reads_as_a_dash_never_as_zero(tracker, clock):
     """NULL is "the host did not report it"; 0 would be a measurement of the call.
 

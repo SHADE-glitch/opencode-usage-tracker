@@ -134,6 +134,18 @@ def fmt_n(v):
     return f"{v:,}"
 
 
+def _with_cut(line: str, shown: int | None, total) -> str:
+    """``line`` plus ``showing N of M`` when the list is shorter than the window.
+
+    A drill-down list is capped at ``detail_limit`` while its header counts the
+    whole window, so 200 rows under "201 requests" read as all of them and the
+    missing one is invisible. Nothing is appended when the list is whole.
+    """
+    if shown is None or not total or total <= shown:
+        return line
+    return f"{line} · showing {shown:,} of {total:,}"
+
+
 def fmt_compact_n(v):
     """A grouped number shortened for the Dashboard, never for a table.
 
@@ -1372,7 +1384,7 @@ if HAVE_TEXTUAL:
             finally:
                 conn.close()
             self.query_one("#hist-summary", Static).update(
-                self._summary_line(summary))
+                self._summary_line(summary, len(found)))
             # The call key rides as the row key (index 1), not as a column, so a
             # selected call can open its own detail.
             self._fill_wide(
@@ -1381,8 +1393,13 @@ if HAVE_TEXTUAL:
                  else "No calls recorded for this name"),
                 key_index=(0, 1), key_kind="call", key_rows=keys)
 
-        def _summary_line(self, s) -> str:
-            """One line of the entity's windowed counts, for the header."""
+        def _summary_line(self, s, shown: int | None = None) -> str:
+            """One line of the entity's windowed counts, for the header.
+
+            ``shown`` is how many rows the list below actually holds. The counts
+            are the whole window, and the list is capped at ``detail_limit``, so
+            a cut list used to report the full count over a short list.
+            """
             if self.kind == "plugin":
                 if not s["uses"]:
                     # Not "no uses": usage comes from plugin/ocut-hook.js, and a 0
@@ -1391,20 +1408,24 @@ if HAVE_TEXTUAL:
                     # cannot parse. Name the evidence that is absent.
                     return (f"no calls recorded by the hook · "
                             f"{self.window_label}")
-                return (f"{count_n(s['uses'], 'use')} · {s['targets']} targets · "
+                line = (f"{count_n(s['uses'], 'use')} · {s['targets']} targets · "
                         f"{s['projects']} projects · {s['sessions']} sessions · "
                         f"{ts(s['first_used'])} → {ts(s['last_used'])} · "
                         f"{self.window_label}")
-            if not s["calls"]:
-                return f"no calls · {self.window_label}"
-            # ok / fail / running are the host's own state.status values
-            # (`completed`, `error`, `running`), counted by q_entity_summary.
-            return (f"{count_n(s['calls'], 'call')} · {s['completed']} ok · "
-                    f"{s['errored']} fail · {s['running']} running · "
-                    f"avg {ms(s['avg_ms'])} · {s['projects']} projects · "
-                    f"{s['sessions']} sessions · "
-                    f"{ts(s['first_used'])} → {ts(s['last_used'])} · "
-                    f"{self.window_label}")
+                total = s["uses"]
+            else:
+                if not s["calls"]:
+                    return f"no calls · {self.window_label}"
+                # ok / fail / running are the host's own state.status values
+                # (`completed`, `error`, `running`), counted by q_entity_summary.
+                line = (f"{count_n(s['calls'], 'call')} · {s['completed']} ok · "
+                        f"{s['errored']} fail · {s['running']} running · "
+                        f"avg {ms(s['avg_ms'])} · {s['projects']} projects · "
+                        f"{s['sessions']} sessions · "
+                        f"{ts(s['first_used'])} → {ts(s['last_used'])} · "
+                        f"{self.window_label}")
+                total = s["calls"]
+            return _with_cut(line, shown, total)
 
     class ModelResponsesScreen(WideTableMixin, Screen):
         """Per-model recent responses in a window, pushed on a Tokens row select."""
@@ -1481,22 +1502,24 @@ if HAVE_TEXTUAL:
             finally:
                 conn.close()
             self.query_one("#resp-summary", Static).update(
-                self._summary_line(summary))
+                self._summary_line(summary, len(found)))
             self._fill_wide("resp-table", rows,
                             "No responses recorded for this model",
                             key_index=(0, 1), key_kind="call",
                             key_rows=[["model", r["call_id"]] for r in found])
 
-        def _summary_line(self, s) -> str:
+        def _summary_line(self, s, shown: int | None = None) -> str:
+            """The window's counts, and how much of them the list shows."""
             if not s["responses"]:
                 return f"no responses · {self.window_label}"
-            return (f"{count_n(s['responses'], 'response')} · "
-                    f"{s['with_usage']} with usage · "
-                    f"in {fmt_n(s['prompt_tokens'])} · "
-                    f"out {fmt_n(s['completion_tokens'])} · "
-                    f"cache "
-                    f"{fmt_n(s['cache_read'])}/{fmt_n(s['cache_write'])} · "
-                    f"{self.window_label}")
+            return _with_cut(
+                f"{count_n(s['responses'], 'response')} · "
+                f"{s['with_usage']} with usage · "
+                f"in {fmt_n(s['prompt_tokens'])} · "
+                f"out {fmt_n(s['completion_tokens'])} · "
+                f"cache "
+                f"{fmt_n(s['cache_read'])}/{fmt_n(s['cache_write'])} · "
+                f"{self.window_label}", shown, s["responses"])
 
     class McpServerScreen(WideTableMixin, Screen):
         """The tools one MCP server was called with, then the calls of one tool.
