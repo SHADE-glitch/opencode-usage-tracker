@@ -1964,3 +1964,193 @@ Evidence L0 2026-10-22: full suite green (384 tests); the column plan derives fr
 Cost     A reader who wants a model's fraction of the window derives it from the Usage Total
          the row already shows.
 Commit   a1d7077
+
+### D-095 · 2026-10-26 · fix
+Symptom  On a v2 host an assistant message carrying `time.completed` but no `tokens` — an
+         interrupted or errored turn — was skipped in silence: no row in `model_calls`, no line in
+         `unparsed`, and the cursor moved past it, so only `sync --full` could ever read it again.
+         v1 counts the same shape as `NO_TOKENS` in `write_model_call`, so the two layouts
+         disagreed about the one promise this reader makes.
+Change   The v2 branch settles the message and counts it as `NO_TOKENS` exactly as v1 does, so the
+         reason is in `unparsed` and the run prints it. Nothing is invented for the missing numbers:
+         the call is stored with no usage, as v1 stores it.
+Evidence L0 2026-10-26: `test_a_completed_v2_message_with_no_usage_is_counted_not_dropped`
+         (`test_ocut_sync.py`); suite green.
+Cost     A completed-but-empty turn now shows as a call with no tokens in the request log, which is
+         the same reading v1 has always produced.
+Commit   fb057cb
+
+### D-096 · 2026-10-26 · fix
+Symptom  `opencode.jsonc` was read with only whole-line `//` stripped, so a comment after a value
+         made `json.loads` fail and the reader took the whole host config as `{}`. Every MCP
+         server then became unknown — its calls fell back to `builtin` and `mcp_usage` stayed
+         empty — the inventory lost the plugins, providers, commands and models the same file
+         declares, and the plugin surface was rebuilt from an empty set. Silent at every step.
+Change   Both comment forms are stripped by walking the text with string state, so `/* */` is a
+         comment and a `https://` inside a value is not. The reader's other failure paths are
+         unchanged: a file that is not JSONC still reads as `{}` and still says so.
+Evidence L0 2026-10-26: `test_a_line_end_comment_does_not_erase_the_host_config`,
+         `test_a_block_comment_does_not_erase_the_host_config`,
+         `test_a_comment_marker_inside_a_string_is_not_a_comment`; suite green.
+Cost     A JSONC file that leans on the stripper's string state (an escaped quote inside a comment)
+         is read by this build's own scanner rather than by `json` alone.
+Commit   97942be
+
+### D-097 · 2026-10-26 · fix
+Symptom  The unparsed tally is cumulative and a holdback re-reads the window it held, so every
+         re-read added the same rows again: "N records unparsed" measured how many times the TUI had
+         been opened rather than how many records the reader could not use.
+Change   A run records the host rowid it counted through, in `meta` because it is not a cursor, and
+         a reason from a row at or below that floor is not tallied twice. Both layouts are covered —
+         v1's held part and v2's still-streaming message — and a renumbered host table, a schema
+         bump and `--full` each drop the floor with the data it describes.
+Evidence L0 2026-10-26: `test_a_held_window_is_counted_once_not_once_per_sync`,
+         `test_a_held_v2_window_is_counted_once_not_once_per_sync`; suite green.
+Cost     One more `meta` key to drop in the three places that already drop the cursors.
+Commit   17284fd
+
+### D-098 · 2026-10-26 · fix
+Symptom  Two syncs over one database read the same host rows and advanced the same cursors, so both
+         could write one call before either committed. A sqlite3 failure escaped as a traceback out
+         of a TUI worker thread nobody watches, and a failure inside `VIEWS_SQL` — which starts with
+         a `DROP VIEW` — left the tables with no views, which every panel reads as "nothing recorded
+         yet".
+Change   A run holds an exclusive `flock` on a `<db>.lock` sidecar beside the tracker file, taken
+         non-blocking: a second run returns a sentence naming the lock instead of parking a worker
+         thread. A missing `fcntl` or an unwritable path degrades to running unlocked. A `sqlite3`
+         error becomes one sentence in the status dict, and the view rebuild is one `BEGIN … COMMIT`.
+Evidence L0 2026-10-26: `test_a_second_sync_is_refused_while_the_run_lock_is_held`,
+         `test_a_lock_that_cannot_be_taken_is_not_a_reason_to_stop`,
+         `test_a_view_rebuild_that_fails_leaves_the_views_it_dropped`; suite green.
+Cost     A lock file next to the database that a reader may see and has to ignore, and a second run
+         that now reports instead of waiting.
+Commit   73bb0cc
+
+### D-099 · 2026-10-26 · fix
+Symptom  `ocut format --write` rewrote `docs/maintenance/opencode-format.md`, a file no document
+         mentions and which never existed, so the flag could only ever refuse. The generated block
+         a reader actually wants — "which host names does this build read" — was nowhere.
+Change   The block lives in `opencode-interface.md`, the document a reader is sent to, between
+         `BEGIN`/`END generated` markers, and the target is a module constant so a case can point it
+         at a copy instead of rewriting a tracked file. The registry renders `~` for the host
+         database and the sidecar, because the block is checked in and an absolute path would
+         publish one machine's user name.
+Evidence L0 2026-10-26: `test_format_write_refreshes_the_generated_block_in_place`,
+         `test_format_write_refuses_a_document_without_the_markers`,
+         `test_the_interface_document_carries_the_generated_markers`,
+         `test_the_checked_in_block_is_what_the_registry_renders`; suite green.
+Cost     A checked-in generated block that a registry edit must re-render, and a case that fails when
+         it does not.
+Commit   7347064
+
+### D-100 · 2026-10-26 · fix
+Symptom  A Tokens row whose model is NULL — a step whose parent message row is gone — carries `""`
+         in its row key, and the drill-down's condition builder read `""` as "no filter". Opening
+         that row listed and counted every model's steps while the row it came from said one request.
+Change   The sentinel now means the NULL it stands for, the same way the provider half of the key
+         already did, so the condition is `model IS NULL`. The cell and the screen title read `-`
+         instead of an empty string.
+Evidence L0 2026-10-26: `test_a_row_with_no_model_opens_only_the_steps_that_have_no_model`;
+         suite green.
+Cost     None to the reader: the row it opens is the row it names.
+Commit   658761e
+
+### D-101 · 2026-10-26 · fix
+Symptom  Both drill-downs take `detail_limit` rows and printed the whole window's count above them,
+         so a list of 200 under "201 requests" read as all of them, with one row missing for no
+         stated reason.
+Change   They append `showing N of M`, the wording the Usage request log already uses, and say
+         nothing when the list is whole.
+Evidence L0 2026-10-26: `test_a_cut_list_says_how_much_of_the_window_it_shows`; suite green.
+Cost     One clause on the header line of a long list.
+Commit   5d2af8a
+
+### D-102 · 2026-10-26 · fix
+Symptom  The `tokens` sort mode ordered on the stored host total while the column it sits under is
+         the display-only Usage Total (prompt + completion + cache hit), so wherever the host's own
+         total is not the parts re-added, pressing `s` reordered the list by a number no column
+         showed.
+Change   A sort mode's key may be a function of the row, which is the only way to name a column the
+         screen computes; `tokens` uses the same expression the cell prints.
+Evidence L0 2026-10-26: `test_the_tokens_sort_orders_by_the_number_the_column_shows`; suite green.
+Cost     The sort key is no longer a bare column name for every mode.
+Commit   3c88ed1
+
+### D-103 · 2026-10-26 · fix
+Symptom  `ocut sessions` renders `in` as the sum of three stored columns, written
+         `(a or 0) + (b or 0) + (c or 0)`: a session the host recorded no rollup for — all three
+         NULL — printed `0`, the one value `fmt_n` exists to avoid.
+Change   The three are summed only when one of them is there, so the cell reads `-` like every
+         other absent count in the report.
+Evidence L0 2026-10-26: `test_a_session_with_no_recorded_rollup_reads_as_a_dash`
+         (`test_ocut_stats.py`) — read red as `0` against `-` before the change.
+Cost     One helper beside `fmt_n`; the column still adds three stored numbers when they exist.
+Commit   a68f34f
+
+### D-104 · 2026-10-26 · fix
+Symptom  A custom window typed as the same date twice with both times left blank dismissed and then
+         showed nothing: `parse_datetime` reads a blank time as the start of the day, so the
+         half-open span was `[00:00, 00:00)` — zero seconds wide — and the pane reported it as a
+         quiet day.
+Change   An end date with no time names that whole day, so the upper bound is the following
+         midnight. An end *at* the start is the same empty span one keystroke away and is now
+         refused with a sentence rather than accepted.
+Evidence L0 2026-10-26: `test_a_blank_end_time_on_the_end_date_covers_that_whole_day` and
+         `test_a_window_that_ends_where_it_starts_is_refused` — read red as a zero-width window
+         before the change.
+Cost     A fixed window's label shows the next midnight as its end, which is what the half-open
+         query means; an end at the start is no longer accepted.
+Commit   34167eb
+
+### D-105 · 2026-10-26 · fix
+Symptom  With a filter on, the Usage note printed the rows it kept against the window's own request
+         count — `5 of 9` about a filter that matched five of five — and the denominator moved
+         whenever an unrelated request arrived.
+Change   The matches are counted separately, with one `COUNT` over the same `WHERE` the list uses,
+         so a cut list says `3 of 40` and a whole one says `5 matches`. The `WHERE` builder is
+         shared by the list and the count so the two cannot drift.
+Evidence L0 2026-10-26: `test_the_filter_note_counts_what_the_filter_matched` — read red as
+         `5 of 9` before the change.
+Cost     One more `COUNT` per refresh of the Usage tab while a filter is set.
+Commit   5d83d2f
+
+### D-106 · 2026-10-26 · chore
+Symptom  Four comments described behaviour the code beside them does not have: the MCP per-tool join
+         was said to widen to `p.tool IS NULL` (the `v_mcp` view does; `q_mcp` does not), the
+         plugin arm was said to filter `source='hook'` (it filters `source <> 'mcp'` plus four
+         kinds), the TUI was said to sync every 30 seconds (it has no timer — mount and `r`), and
+         the sort cycle was attributed to `o` (it is `s`).
+Change   Each comment now states what its code does. A comment that is wrong about the code is read
+         as a specification, so it is worse than no comment.
+Evidence L0 2026-10-26: no case — the four claims are about prose, and each was checked against the
+         statement it sits above; suite green.
+Cost     None.
+Commit   202ae8f
+
+### D-107 · 2026-10-26 · chore
+Symptom  `q_usage_activity` and `q_usage_daily` had no caller at all, and `q_subagent_share` /
+         `q_usage_cost_daily` were kept alive only by their own tests while their docstrings still
+         described the Dashboard panels that used to read them — a KPI split and two sparklines.
+         A query whose only consumer is a test is a query the interface cannot break.
+Change   The four queries and the two cases go together, and the one comment that pointed at
+         `q_usage_activity` for a definition now states the count itself.
+Evidence L0 2026-10-26: `test_ocut_entity_state.py` green without the two cases; no other caller
+         in `scripts/`, `bin/` or the documents.
+Cost     None; the history keeps them if a panel comes back.
+Commit   1a3cdb0
+
+### D-108 · 2026-10-26 · guard
+Symptom  `test_conventions.py` carried the sibling repos' `_hermetic.py` tripwire behind an
+         `exists()` check. This repo has no such module — the guard lives in `conftest.py` — so the
+         branch and the `sys.path` scaffolding that existed only to serve it never ran.
+         `conftest.py` itself stopped one default short: `CONFIG_PATH` is resolved at import, so a
+         developer's real `config.toml` decided every default the suite ran with while a clean
+         runner ran with the shipped ones.
+Change   The dead branch and its scaffolding are gone. `CONFIG_PATH` is pinned with the other three
+         defaults, and the fixture's own docstring counts four. The same round made the ledger case
+         wait for the dashboard's fit to settle instead of after one fixed pause (`01d03c2`): the
+         case read the ledger at its natural height when the suite ran loaded.
+Evidence L0 2026-10-26: `test_the_suite_never_reads_the_config_file_it_is_not_handed` — read red
+         against the real `~/.config/ocut/config.toml` path before the pin; suite green.
+Cost     A fifth pinned default, and a ledger case that takes a few more frames.
+Commit   9f00aae
