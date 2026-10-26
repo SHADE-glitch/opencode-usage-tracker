@@ -1020,6 +1020,46 @@ def config_dir() -> Path:
     return Path(db.HOST_CONFIG_DIR)
 
 
+def _strip_jsonc(text: str) -> str:
+    """Remove the comments JSONC allows, leaving every string intact.
+
+    ``opencode.jsonc`` is JSONC, and the host's own documentation writes
+    comments after a value as well as on their own line. Stripping whole-line
+    ``//`` with a regex cannot do that, and a comment marker inside a string --
+    every MCP server's ``https://`` -- must survive. So the text is walked once,
+    tracking string state and escapes, rather than matched line by line.
+    """
+    out: list[str] = []
+    i, n = 0, len(text)
+    in_string = escaped = False
+    while i < n:
+        ch = text[i]
+        if in_string:
+            out.append(ch)
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            i += 1
+        elif ch == '"':
+            in_string = True
+            out.append(ch)
+            i += 1
+        elif ch == "/" and text[i + 1:i + 2] == "/":
+            while i < n and text[i] not in "\r\n":
+                i += 1
+        elif ch == "/" and text[i + 1:i + 2] == "*":
+            end = text.find("*/", i + 2)
+            i = n if end < 0 else end + 2
+            out.append(" ")          # never join the tokens either side
+        else:
+            out.append(ch)
+            i += 1
+    return "".join(out)
+
+
 def load_config_json(host_config=None) -> dict:
     """The host's own ``opencode.json``, or ``{}``.
 
@@ -1034,9 +1074,8 @@ def load_config_json(host_config=None) -> dict:
                 text = path.read_text(encoding="utf-8", errors="replace")
             except OSError:
                 return {}
-            stripped = re.sub(r"^\s*//.*$", "", text, flags=re.M)
             try:
-                data = json.loads(stripped)
+                data = json.loads(_strip_jsonc(text))
             except ValueError:
                 return {}
             return data if isinstance(data, dict) else {}

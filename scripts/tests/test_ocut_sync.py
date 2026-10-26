@@ -950,6 +950,48 @@ def test_a_server_qualified_name_is_split_against_the_config(tmp_path, tracker):
     assert (row["server"], row["tool"]) == ("context7", "query-docs")
 
 
+def _rewrite_config_as_jsonc(cfg: Path, old: str, new: str) -> None:
+    """Turn the fixture's ``opencode.json`` into an ``opencode.jsonc`` with ``new``."""
+    body = (cfg / "opencode.json").read_text(encoding="utf-8")
+    assert old in body
+    (cfg / "opencode.json").unlink()
+    (cfg / "opencode.jsonc").write_text(body.replace(old, new, 1),
+                                        encoding="utf-8")
+
+
+def test_a_line_end_comment_does_not_erase_the_host_config(tmp_path, tracker):
+    """JSONC allows ``//`` after a value; only whole-line comments were stripped.
+
+    One trailing comment made ``json.loads`` fail, and the reader took the whole
+    config as ``{}``: no MCP server was known, so an attributed call fell back to
+    ``builtin``, and the inventory lost the plugins, providers, commands and
+    models the same file declares. The failure was silent at every step.
+    """
+    path, cfg = mcp_host(tmp_path, "context7_query-docs", ["context7"])
+    _rewrite_config_as_jsonc(cfg, '"mcp": {',
+                             '"mcp": {  // the servers this host runs\n    ')
+    assert sync.mcp_servers(cfg) == ("context7",)
+    sync.run(db_path=tracker, host_db=path, host_config=cfg)
+    row = rows(tracker, "mcp_usage")[0]
+    assert (row["server"], row["tool"]) == ("context7", "query-docs")
+
+
+def test_a_block_comment_does_not_erase_the_host_config(tmp_path):
+    """The other JSONC comment form, on its own line and between values."""
+    path, cfg = mcp_host(tmp_path, "context7_query-docs", ["context7"])
+    _rewrite_config_as_jsonc(cfg, '"mcp": {',
+                             '/* the servers this host runs */ "mcp": {')
+    assert sync.mcp_servers(cfg) == ("context7",)
+
+
+def test_a_comment_marker_inside_a_string_is_not_a_comment(tmp_path, tracker):
+    """A URL's ``https://`` is not the start of a line comment."""
+    path, cfg = mcp_host(tmp_path, "context7_query-docs", ["context7"])
+    assert sync.mcp_servers(cfg) == ("context7",)
+    sync.run(db_path=tracker, host_db=path, host_config=cfg)
+    assert rows(tracker, "mcp_usage")[0]["server"] == "context7"
+
+
 def test_the_longest_configured_prefix_wins(tmp_path, tracker):
     """`playwright` must not claim `playwright_browser_navigate` when a server
     named `playwright_browser` is also configured.
