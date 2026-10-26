@@ -973,7 +973,8 @@ def index_messages_v2(conn, src, counts: Counts, servers: tuple[str, ...],
             settled = True
             when = data.get("time")
             when = when if isinstance(when, dict) else {}
-            if isinstance(data.get("tokens"), dict):
+            usage = isinstance(data.get("tokens"), dict)
+            if usage:
                 write_model_call_v2(conn, row, data, ctx, counts)
             elif not when.get("completed"):
                 # Still streaming: the usage numbers have not been written yet.
@@ -993,6 +994,12 @@ def index_messages_v2(conn, src, counts: Counts, servers: tuple[str, ...],
 
             if not settled:
                 hold_at = row["rowid"] if hold_at is None else min(hold_at, row["rowid"])
+            elif not usage:
+                # Finished, and the host wrote no usage for it: the turn was
+                # interrupted or errored after it ended. Counted exactly as v1
+                # counts a step-finish with no tokens -- the row is otherwise
+                # passed for good and only `--full` would ever look again.
+                counts.bump(NO_TOKENS)
 
         cursor = rows[-1]["rowid"]
         conn.commit()

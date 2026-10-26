@@ -676,6 +676,34 @@ def test_an_unknown_v2_message_type_is_counted(tmp_path, tracker):
     assert "unknown_message_type:mystery" in reasons
 
 
+def test_a_completed_v2_message_with_no_usage_is_counted_not_dropped(
+        tmp_path, tracker):
+    """v1 counts a step-finish with no tokens; v2 must count the same turn.
+
+    A message that finished with no ``tokens`` was interrupted or errored after
+    the turn ended. It is not streaming (the cursor passes it), so without a bump
+    the record left no trace anywhere: no ``model_calls`` row, no ``unparsed``
+    count, and only ``--full`` could ever look at it again.
+    """
+    path = tmp_path / "opencode.db"
+    conn = make_host_v2(path)
+    add_session_v2(conn, "ses_v2")
+    add_message_v2(conn, "msg_ok", "ses_v2", created=1_700_000_100_000,
+                   completed=1_700_000_500_000,
+                   tokens={"input": 1, "output": 1})
+    add_message_v2(conn, "msg_cut", "ses_v2", created=1_700_000_600_000,
+                   completed=1_700_000_700_000)
+    conn.commit()
+    conn.close()
+
+    stats = run_v2(path, tracker)
+    assert [r["call_id"] for r in rows(tracker, "model_calls")] == ["msg_ok"]
+    assert stats["cursor"] == 2          # the turn is over: the cursor passes it
+    got = {r["reason"]: r["count"] for r in rows(tracker, "unparsed")}
+    assert got.get(sync.NO_TOKENS) == 1
+    assert stats["unparsed_this_run"] == 1
+
+
 # --- cursors, idempotency and the mutating row -----------------------------
 
 def test_a_second_run_reads_nothing_and_duplicates_nothing(host, tracker):
