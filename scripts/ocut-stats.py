@@ -53,6 +53,16 @@ def fmt_n(v):
     return f"{v:,}"
 
 
+def _sum_present(*values):
+    """Sum the values that are there; ``None`` when none of them is.
+
+    A column that re-adds several stored ones (``sessions``' ``in`` is input +
+    cache read + write) must not turn three NULLs into a measured ``0``.
+    """
+    present = [v for v in values if v is not None]
+    return sum(present) if present else None
+
+
 def fmt_cost(v):
     """Render money: ``-`` for absent, ``$0.0000`` for a recorded zero.
 
@@ -720,7 +730,7 @@ def cmd_sessions(conn, args):
         ["when", "dur", "agent", "model", "in", "out", "cost",
          "sub", "dir", "session"],
         [[ts(r[0]), ms(r[1]), r[2] or "-", r[3] or "-",
-          fmt_n((r[4] or 0) + (r[7] or 0) + (r[8] or 0)),   # Input = in + cache read + write
+          fmt_n(_sum_present(r[4], r[7], r[8])),   # Input = in + cache read + write
           fmt_n(r[5]), fmt_cost(r[9]),
           "yes" if r[10] else "-",
           (Path(r[11]).name if r[11] else "-"),

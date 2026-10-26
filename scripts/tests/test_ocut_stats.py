@@ -234,6 +234,37 @@ def test_restore_refuses_an_empty_file_without_touching_the_live_file(tmp_path):
 
 # --- export / show scoping / health labels ---------------------------------
 
+def test_a_session_with_no_recorded_rollup_reads_as_a_dash(tmp_path, capsys):
+    """Three NULL columns were added as three zeros, so `ocut sessions` invented a 0.
+
+    The host leaves `tokens_*` NULL for a session it recorded no rollup for, and
+    `fmt_n` already renders NULL as `-`. Summing with `or 0` turned an absence into
+    a measurement on the one column that re-adds three of them.
+    """
+    path = tmp_path / "usage.db"
+    conn = db.open_db(path)
+    db.ensure_schema(conn)
+    for sid, tokens in (("sess0001", (None, None, None, None)),
+                        ("sess0002", (100, 20, 300, 40))):
+        conn.execute(
+            "INSERT INTO sessions(session_id, started_at, ended_at, is_subagent,"
+            " tokens_input, tokens_output, tokens_cache_read, tokens_cache_write)"
+            " VALUES(?,1700000000000,1700000060000,0,?,?,?,?)",
+            (sid, *tokens))
+    conn.commit()
+    conn.close()
+
+    assert stats.main(["--db", str(path), "sessions"]) == 0
+    rows = {}
+    for line in capsys.readouterr().out.splitlines():
+        if "sess000" in line:
+            cells = re.split(r" {2,}", line.strip())
+            rows[cells[-1]] = cells
+    # when · dur · agent · model · in · out · cost · sub · dir · session
+    assert (rows["sess0001"][4], rows["sess0001"][5]) == ("-", "-"), rows["sess0001"]
+    assert (rows["sess0002"][4], rows["sess0002"][5]) == ("440", "20"), rows["sess0002"]
+
+
 def test_export_carries_every_table_and_view(tmp_path, capsys):
     """The export is the incident copy: raw calls, cursors and unparsed included."""
     path = tmp_path / "usage.db"
