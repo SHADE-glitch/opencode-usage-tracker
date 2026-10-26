@@ -302,6 +302,10 @@ FORMAT_V2 = 2
 # The plugin-usage sidecar (see ``ingest_plugin_events``). Its cursor is a byte
 # offset, not a rowid: the file is not OpenCode's, it is one this project owns.
 STATE_PLUGIN_EVENTS = "plugin-events"
+# ``meta`` keys: the highest host rowid whose ``unparsed`` reasons are already in
+# the tally, per cursor. Not a ``sync_state`` row, because it is not a cursor --
+# nothing is read from it -- and ``ocut health`` prints every cursor row.
+META_UNPARSED_THROUGH = "unparsed_through:"
 
 # Record types in the sidecar. ``surface`` names a plugin's registered tool and
 # command ids; ``call`` is one invocation; ``reset`` is written by the hook when it
@@ -415,6 +419,24 @@ def remember_state(conn, name: str, cursor: int, host_count: int,
     )
 
 
+def unparsed_floor(conn, cursor_name: str) -> int:
+    """The host rowid the last run counted ``unparsed`` reasons through, or 0."""
+    row = conn.execute("SELECT value FROM meta WHERE key=?",
+                       (META_UNPARSED_THROUGH + cursor_name,)).fetchone()
+    try:
+        return int(row[0]) if row else 0
+    except (TypeError, ValueError):
+        return 0
+
+
+def remember_unparsed_floor(conn, cursor_name: str, rowid: int) -> None:
+    conn.execute(
+        "INSERT INTO meta(key, value) VALUES(?,?)"
+        " ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        (META_UNPARSED_THROUGH + cursor_name, str(rowid)),
+    )
+
+
 class Counts:
     """Per-run tally, keyed by the reason string so it can be reported verbatim."""
 
@@ -427,8 +449,21 @@ class Counts:
         self.mcp = 0
         self.sessions = 0
         self.unparsed = {}
+        # The host rowid whose reasons are already in ``unparsed``. A holdback
+        # re-reads a window the previous run already tallied, and the table is
+        # cumulative, so without this floor the count measured how many times
+        # ``ocut sync`` had run rather than how many records were unusable.
+        self.floor = 0
 
-    def bump(self, reason: str, n: int = 1) -> None:
+    def bump(self, reason: str, n: int = 1, rowid: int | None = None) -> None:
+        """Tally ``reason``, unless that host row was counted by an earlier run.
+
+        ``rowid`` is the host row the reason came from, and ``None`` means the
+        reason belongs to no single row (a cap, a sidecar line) and is always
+        counted.
+        """
+        if rowid is not None and rowid <= self.floor:
+            return
         self.unparsed[reason] = self.unparsed.get(reason, 0) + n
 
     def flush(self, conn) -> int:
@@ -490,6 +525,14 @@ def classify(name: str, servers: tuple[str, ...]) -> tuple[str, str | None, str 
 
 # --- writers ---------------------------------------------------------------
 
+def _row_id(row) -> int | None:
+    """The host rowid of a row, when it has one: a projected row may not."""
+    try:
+        return row["rowid"]
+    except (IndexError, KeyError):
+        return None
+
+
 def write_model_call(conn, part, data: dict, ctx: dict | None, counts: Counts,
                      total_expected: bool = True) -> None:
     """One ``step-finish`` part -> one row of ``model_calls``.
@@ -505,7 +548,7 @@ def write_model_call(conn, part, data: dict, ctx: dict | None, counts: Counts,
     """
     tokens = data.get("tokens")
     if not isinstance(tokens, dict):
-        counts.bump(NO_TOKENS)
+        counts.bump(NO_TOKENS, rowid=_row_id(part))
         return
     cache = tokens.get("cache")
     cache = cache if isinstance(cache, dict) else {}
@@ -560,7 +603,7 @@ def write_tool_call(conn, part, data: dict, ctx: dict | None,
     """
     name = data.get(TOOL_NAME_FIELD)
     if not isinstance(name, str) or not name:
-        counts.bump(NO_TOOL_NAME)
+        counts.bump(NO_TOOL_NAME, rowid=_row_id(part))
         return True
     state = data.get("state")
     state = state if isinstance(state, dict) else {}
@@ -594,7 +637,7 @@ def write_tool_call(conn, part, data: dict, ctx: dict | None,
                 (part["id"], skill, session_id, project, ts, status, duration))
             counts.skills += 1
         else:
-            counts.bump(NO_SKILL_NAME)
+            counts.bump(NO_SKILL_NAME, rowid=_row_id(part))
     elif category == "agent":
         # Both spellings, v2 first: `agent` is what the current layout sends.
         agent_type = args.get("agent") or args.get("subagent_type")
@@ -610,7 +653,7 @@ def write_tool_call(conn, part, data: dict, ctx: dict | None,
                  project, ts, status, duration))
             counts.agents += 1
         else:
-            counts.bump(NO_TASK_TYPE)
+            counts.bump(NO_TASK_TYPE, rowid=_row_id(part))
     elif category == "mcp":
         conn.execute(
             "INSERT OR REPLACE INTO mcp_usage(call_id, server, tool, session_id,"
@@ -746,9 +789,12 @@ def index_parts(conn, src, counts: Counts, servers: tuple[str, ...]) -> None:
     cursor = cursor_of(conn, CURSOR_PART)
     host_count, host_max = host_stats(src, TABLE_PART)
     note = ""
+    read_through = counts.floor = unparsed_floor(conn, CURSOR_PART)
     if cursor and host_max < cursor:
         note = f"host parts table renumbered (max rowid {host_max} < cursor {cursor})"
         cursor = 0
+        # New rows under old numbers: every one of them is new to the tally.
+        read_through = counts.floor = 0
     previous = conn.execute(
         "SELECT host_count FROM sync_state WHERE name=?", (CURSOR_PART,)).fetchone()
     if previous and previous[0] is not None and host_count < previous[0]:
@@ -770,7 +816,7 @@ def index_parts(conn, src, counts: Counts, servers: tuple[str, ...]) -> None:
             except (TypeError, ValueError):
                 data = None
             if not isinstance(data, dict):
-                counts.bump(UNPARSEABLE_DATA)
+                counts.bump(UNPARSEABLE_DATA, rowid=row["rowid"])
                 continue
             parsed.append((row, data))
 
@@ -783,7 +829,7 @@ def index_parts(conn, src, counts: Counts, servers: tuple[str, ...]) -> None:
             if ptype in HANDLED_PART_TYPES:
                 ctx = contexts.get(row["message_id"])
                 if ptype == "step-finish" and ctx is None:
-                    counts.bump(MESSAGE_ROW_ABSENT)
+                    counts.bump(MESSAGE_ROW_ABSENT, rowid=row["rowid"])
                 if ptype == "tool":
                     if not write_tool_call(conn, row, data, ctx, servers, counts):
                         hold_at = row["rowid"] if hold_at is None \
@@ -791,10 +837,11 @@ def index_parts(conn, src, counts: Counts, servers: tuple[str, ...]) -> None:
                 else:
                     write_model_call(conn, row, data, ctx, counts)
             elif ptype not in IGNORED_PART_TYPES:
-                counts.bump(f"{UNKNOWN_PART_TYPE}:{ptype}")
+                counts.bump(f"{UNKNOWN_PART_TYPE}:{ptype}", rowid=row["rowid"])
             counts.parts += 1
 
         cursor = rows[-1]["rowid"]
+        read_through = max(read_through, cursor)
         conn.commit()
 
     if hold_at is not None and host_max - hold_at > MAX_HELD_ROWS:
@@ -805,6 +852,10 @@ def index_parts(conn, src, counts: Counts, servers: tuple[str, ...]) -> None:
         note = (note + "; " if note else "") + \
             f"{STATUS_RUNNING} part held at rowid {hold_at} for the next run"
     remember_state(conn, CURSOR_PART, cursor, host_count, host_max, note)
+    # Every row up to here has been counted, held or not: the next run re-reads
+    # the held window and must not tally those reasons a second time.
+    remember_unparsed_floor(conn, CURSOR_PART, read_through)
+    counts.floor = 0
 
 
 # --- v2 messages -----------------------------------------------------------
@@ -879,6 +930,7 @@ def write_tool_entry_v2(conn, row, item: dict, ctx: dict | None,
         "id": call_id,
         "session_id": row["session_id"],
         "time_created": when.get("created") or row["time_created"],
+        "rowid": row["rowid"],
     }
     data = {"tool": name, "state": _v2_tool_state(item)}
     return write_tool_call(conn, part, data, ctx, servers, counts)
@@ -924,10 +976,12 @@ def index_messages_v2(conn, src, counts: Counts, servers: tuple[str, ...],
     cursor = cursor_of(conn, CURSOR_MESSAGE)
     host_count, host_max = host_stats(src, TABLE_MESSAGE_V2)
     note = ""
+    read_through = counts.floor = unparsed_floor(conn, CURSOR_MESSAGE)
     if cursor and host_max < cursor:
         note = (f"host {TABLE_MESSAGE_V2} renumbered "
                 f"(max rowid {host_max} < cursor {cursor})")
         cursor = 0
+        read_through = counts.floor = 0
     previous = conn.execute(
         "SELECT host_count FROM sync_state WHERE name=?", (CURSOR_MESSAGE,)).fetchone()
     if previous and previous[0] is not None and host_count < previous[0]:
@@ -947,15 +1001,16 @@ def index_messages_v2(conn, src, counts: Counts, servers: tuple[str, ...],
             try:
                 data = json.loads(row["data"])
             except (TypeError, ValueError):
-                counts.bump(UNPARSEABLE_DATA)
+                counts.bump(UNPARSEABLE_DATA, rowid=row["rowid"])
                 continue
             if not isinstance(data, dict):
-                counts.bump(UNPARSEABLE_DATA)
+                counts.bump(UNPARSEABLE_DATA, rowid=row["rowid"])
                 continue
             mtype = row["type"] or data.get(V2_MESSAGE_TYPE_FIELD)
             if mtype != "assistant":
                 if mtype not in V2_IGNORED_MESSAGE_TYPES:
-                    counts.bump(f"{UNKNOWN_MESSAGE_TYPE}:{mtype}")
+                    counts.bump(f"{UNKNOWN_MESSAGE_TYPE}:{mtype}",
+                                rowid=row["rowid"])
                 continue
 
             meta = session_meta.get(row["session_id"]) or {}
@@ -990,7 +1045,7 @@ def index_messages_v2(conn, src, counts: Counts, servers: tuple[str, ...],
                     if not write_tool_entry_v2(conn, row, item, ctx, servers, counts):
                         settled = False
             elif content is not None:
-                counts.bump(UNPARSEABLE_MESSAGE)
+                counts.bump(UNPARSEABLE_MESSAGE, rowid=row["rowid"])
 
             if not settled:
                 hold_at = row["rowid"] if hold_at is None else min(hold_at, row["rowid"])
@@ -999,9 +1054,10 @@ def index_messages_v2(conn, src, counts: Counts, servers: tuple[str, ...],
                 # interrupted or errored after it ended. Counted exactly as v1
                 # counts a step-finish with no tokens -- the row is otherwise
                 # passed for good and only `--full` would ever look again.
-                counts.bump(NO_TOKENS)
+                counts.bump(NO_TOKENS, rowid=row["rowid"])
 
         cursor = rows[-1]["rowid"]
+        read_through = max(read_through, cursor)
         conn.commit()
 
     if hold_at is not None and host_max - hold_at > MAX_HELD_ROWS:
@@ -1012,6 +1068,8 @@ def index_messages_v2(conn, src, counts: Counts, servers: tuple[str, ...],
         note = (note + "; " if note else "") + \
             f"unsettled message held at rowid {hold_at} for the next run"
     remember_state(conn, CURSOR_MESSAGE, cursor, host_count, host_max, note)
+    remember_unparsed_floor(conn, CURSOR_MESSAGE, read_through)
+    counts.floor = 0
 
 
 # --- inventory -------------------------------------------------------------

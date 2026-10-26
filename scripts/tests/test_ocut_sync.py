@@ -716,6 +716,56 @@ def test_a_second_run_reads_nothing_and_duplicates_nothing(host, tracker):
     assert rows(tracker, "tool_calls") == before
 
 
+def test_a_held_window_is_counted_once_not_once_per_sync(host, tracker):
+    """A holdback re-reads a window the previous run already tallied.
+
+    The tally is cumulative, so every re-read of the same two unknown parts added
+    them again: "N records unparsed" measured how many times the TUI had started,
+    not how many records the reader could not use. Counting is per record, so the
+    floor a run leaves behind is the rowid it counted through.
+    """
+    conn = sqlite3.connect(host)
+    add_tool(conn, "prt_live", "msg_a", "ses_parent", tool="bash",
+             status="running", start=1_700_000_600_000)
+    for i in range(2):                      # after the held row, so both re-read
+        conn.execute(
+            "INSERT INTO part(id, message_id, session_id, time_created, data)"
+            " VALUES(?,?,?,?,?)",
+            (f"prt_odd_{i}", "msg_a", "ses_parent", 1_700_000_700_000 + i,
+             json.dumps({"type": f"brand-new-{i}"})))
+    conn.commit()
+    conn.close()
+
+    first = run(host, tracker, quiet=True)
+    assert first["unparsed"] == 2
+    for _ in range(2):
+        again = run(host, tracker, quiet=True)
+        assert again["parts_read"] >= 3     # the held window was read again
+        assert again["unparsed_this_run"] == 0
+        assert again["unparsed"] == 2
+
+
+def test_a_held_v2_window_is_counted_once_not_once_per_sync(tmp_path, tracker):
+    """The same floor for v2, whose hold is a message that is still streaming."""
+    path = tmp_path / "opencode.db"
+    conn = make_host_v2(path)
+    add_session_v2(conn, "ses_v2")
+    add_message_v2(conn, "msg_live", "ses_v2", created=1_700_000_100_000,
+                   content=[v2_tool("call_run", "bash", status="running",
+                                    created=1_700_000_100_000)])
+    add_message_v2(conn, "msg_odd", "ses_v2", mtype="mystery",
+                   created=1_700_000_200_000)
+    conn.commit()
+    conn.close()
+
+    first = run_v2(path, tracker, quiet=True)
+    assert first["unparsed"] == 1
+    for _ in range(2):
+        again = run_v2(path, tracker, quiet=True)
+        assert again["unparsed_this_run"] == 0
+        assert again["unparsed"] == 1
+
+
 def test_the_cursor_holds_a_running_tool_and_the_next_run_finishes_it(host, tracker):
     """Cursor rule 1: a `running` part is written and re-read, never frozen.
 

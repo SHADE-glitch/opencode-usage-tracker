@@ -1079,6 +1079,10 @@ def reset(conn: sqlite3.Connection) -> None:
         if r[0] not in keep)
     for table in tables:
         conn.execute(f"DELETE FROM {table}")
+    # `meta` is kept only for `schema_version`: the rest of it is sync bookkeeping
+    # (the rowid the `unparsed` tally counted through), and a rebuild re-reads the
+    # host, so keeping it would suppress every reason the new read finds.
+    conn.execute("DELETE FROM meta WHERE key <> 'schema_version'")
     conn.commit()
 
 
