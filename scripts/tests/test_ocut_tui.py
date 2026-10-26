@@ -147,6 +147,24 @@ def drive(app_setup, body, size=(150, 55)):
     asyncio.run(_it())
 
 
+async def settle(pilot, widget, rounds: int = 8) -> None:
+    """Pause until a widget's geometry stops moving.
+
+    A fixed `pause()` is a guess about how many frames a layout needs.
+    `_fit_dashboard` runs from `call_after_refresh` and corrects itself once
+    more after that, so a single pause read the project ledger at its natural
+    height under a loaded machine while the same code settled on a quiet one.
+    """
+    last, stable = None, 0
+    for _ in range(rounds):
+        await pilot.pause()
+        now = (widget.size, widget.styles.min_height, widget.region)
+        stable = stable + 1 if now == last else 0
+        if stable >= 2:      # three reads in a row, not two: a layout that has
+            return           # not been fitted yet is also still
+        last = now
+
+
 def headers(table):
     return [str(table.columns[k].label) for k in table.columns]
 
@@ -495,6 +513,7 @@ def test_the_project_ledger_takes_the_height_the_rows_leave(tracker, clock):
         box = app.query_one("#dash-box")
         table = app.query_one("#dash-projects", DataTable)
         note = app.query_one("#dash-note", Static)
+        await settle(pilot, table)
         assert box.max_scroll_y == 0, "a tall dashboard still scrolls"
         assert table.size.height > 1 + table.row_count, (
             "the ledger never took the spare height")
@@ -504,18 +523,15 @@ def test_the_project_ledger_takes_the_height_the_rows_leave(tracker, clock):
         # arrives before the box is laid out at its new height, so a fit
         # measured there would use the previous window's spare.
         await pilot.resize_terminal(160, 60)
-        await pilot.pause()
-        await pilot.pause()
+        await settle(pilot, table)
         assert box.max_scroll_y == 0
         assert note.region.bottom == box.region.bottom, (
             "growing the terminal left the ledger behind")
         await pilot.resize_terminal(120, 20)
-        await pilot.pause()
-        await pilot.pause()
+        await settle(pilot, table)
         assert box.max_scroll_y > 0, "shrinking the terminal did not scroll"
         await pilot.resize_terminal(120, 45)
-        await pilot.pause()
-        await pilot.pause()
+        await settle(pilot, table)
         assert box.max_scroll_y == 0
         assert note.region.bottom == box.region.bottom, (
             "the ledger did not take the height back")
@@ -523,6 +539,7 @@ def test_the_project_ledger_takes_the_height_the_rows_leave(tracker, clock):
     async def short(pilot, app):
         box = app.query_one("#dash-box")
         table = app.query_one("#dash-projects", DataTable)
+        await settle(pilot, table)
         assert table.size.height == 1 + table.row_count, (
             "a short box grew the ledger instead of scrolling")
         assert box.max_scroll_y > 0, "the short box does not scroll"
