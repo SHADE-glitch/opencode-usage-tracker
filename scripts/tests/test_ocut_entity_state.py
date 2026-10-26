@@ -464,25 +464,6 @@ def test_mode_stats_group_steps_by_the_host_agent(conn):
         db.q_mode_stats(conn, by="model_id")
 
 
-def test_subagent_share_counts_child_sessions(conn):
-    """The KPI is the split of the window's sessions, not a separate total."""
-    session_row(conn, "ses_a")
-    session_row(conn, "ses_child", is_subagent=1, started=1_700_000_500_000)
-    share = db.q_subagent_share(conn)
-    assert share == {"sessions": 2, "subagents": 1}
-    share = db.q_subagent_share(conn, start_ts=1_700_000_400_000,
-                                end_ts=1_700_000_600_000)
-    assert share == {"sessions": 1, "subagents": 1}
-
-
-def test_cost_daily_sums_the_steps_cost_per_local_day(conn):
-    step_use(conn, "s1", cost=0.5, ts=1_700_000_000_000)
-    step_use(conn, "s2", cost=0.25, ts=1_700_000_100_000)
-    step_use(conn, "s3", cost=0.1, ts=1_700_086_400_000)   # the next day
-    rows = db.q_usage_cost_daily(conn)
-    assert [r["cost"] for r in rows] == [0.75, 0.1]
-
-
 def test_sessions_report_lists_newest_first_with_the_host_rollup(conn):
     session_row(conn, "ses_old", started=1_700_000_000_000,
                 ended=1_700_000_060_000)

@@ -2096,7 +2096,7 @@ def q_usage_kpi(conn, start_ts=None, end_ts=None) -> dict:
         # The usage-facing reach: sessions and projects that produced a model
         # step in the window, not sessions that merely started in it. The
         # Dashboard's Usage panel shows these beside Requests and Cost; the
-        # Runtime panel keeps the tool-call reach, as `q_usage_activity` defines it.
+        # Runtime panel keeps the tool-call reach, counted over `tool_calls`.
         "model_sessions": one(
             f"SELECT COUNT(DISTINCT session_id) FROM model_calls{where}"),
         "model_projects": one(
@@ -2267,85 +2267,6 @@ def q_mode_stats(conn, start_ts=None, end_ts=None, by="agent", limit=None):
     if limit:
         sql += f" LIMIT {int(limit)}"
     return conn.execute(sql, params).fetchall()
-
-
-def q_subagent_share(conn, start_ts=None, end_ts=None) -> dict:
-    """Sessions in the window split by `is_subagent` — the Dashboard KPI.
-
-    OpenCode records a subagent run as a session of its own, and on this host
-    they are the majority (457 of 707). One "sessions" count hides that, so
-    the share is its own panel: `sessions` is the window's total,
-    `subagents` the child rows. Windowed on `started_at`, like Sessions
-    everywhere.
-    """
-    where, params = _time_filter(start_ts, end_ts, col="started_at")
-    row = conn.execute(
-        "SELECT COUNT(*) AS sessions,"
-        " COALESCE(SUM(is_subagent), 0) AS subagents"
-        f" FROM sessions{where}", params).fetchone()
-    return dict(row)
-
-def q_usage_activity(conn, start_ts=None, end_ts=None) -> dict:
-    """Windowed tool-runtime rollup for the Dashboard's "more metrics" panel.
-
-    How the calls in the window behaved: ``completed`` and ``errored`` are the
-    host's own finished ``state.status`` values; ``running`` is every state that
-    has not finished (`running` and `streaming`), so the three add up to ``calls``.
-    ``avg_ms`` is the mean tool duration (NULL when nothing ran, never a fabricated
-    0), and ``sessions``/``projects`` are the DISTINCT ids seen in the window — the
-    windowed form of the all-time ``overview()`` counts. Both bounds ``None``
-    means all-time.
-    """
-    where, params = _time_filter(start_ts, end_ts, col="ts")
-    row = conn.execute(
-        "SELECT COUNT(*) AS calls,"
-        " SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) AS completed,"
-        " SUM(CASE WHEN status='error' THEN 1 ELSE 0 END) AS errored,"
-        " SUM(CASE WHEN status IN ('running','streaming') THEN 1 ELSE 0 END)"
-        "   AS running,"
-        " CAST(AVG(duration_ms) AS INTEGER) AS avg_ms,"
-        " COUNT(DISTINCT session_id) AS sessions,"
-        " COUNT(DISTINCT project) AS projects"
-        f" FROM tool_calls{where}",
-        params,
-    ).fetchone()
-    return dict(row)
-
-
-def q_usage_daily(conn, start_ts=None, end_ts=None):
-    """Tool-call counts per LOCAL calendar day in the window, oldest first.
-
-    Rows are ``{"day": "YYYY-MM-DD", "calls": n}`` for days that have calls. The
-    day is bucketed in local time (``localtime``) so it lines up with the local-day
-    windows; the Dashboard draws the series as a sparkline. Days with no calls are
-    simply absent — the caller fills the gaps.
-    """
-    where, params = _time_filter(start_ts, end_ts, col="ts")
-    return conn.execute(
-        "SELECT strftime('%Y-%m-%d', ts / 1000, 'unixepoch', 'localtime') AS day,"
-        " COUNT(*) AS calls"
-        f" FROM tool_calls{where}"
-        " GROUP BY day ORDER BY day",
-        params,
-    ).fetchall()
-
-
-def q_usage_cost_daily(conn, start_ts=None, end_ts=None):
-    """Model-step cost per LOCAL calendar day, oldest first — the cost sparkline.
-
-    The calls-per-day sparkline counts `tool_calls`; this one sums the host's
-    own per-step `cost` over `model_calls`, the same money the Cost panel
-    shows, bucketed the same local-day way so the two series line up. Days
-    with no steps are absent — the caller fills the gaps.
-    """
-    where, params = _time_filter(start_ts, end_ts)
-    return conn.execute(
-        "SELECT strftime('%Y-%m-%d', ts / 1000, 'unixepoch', 'localtime') AS day,"
-        " SUM(cost) AS cost"
-        f" FROM model_calls{where}"
-        " GROUP BY day ORDER BY day",
-        params,
-    ).fetchall()
 
 
 def q_sessions(conn, limit=30, start_ts=None, end_ts=None):
