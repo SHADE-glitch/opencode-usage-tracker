@@ -241,6 +241,39 @@ def test_a_version_bump_clears_the_cursors_so_nothing_is_read_again(
     conn.close()
 
 
+def _views(conn):
+    return sorted(r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='view'"))
+
+
+def test_a_view_rebuild_that_fails_leaves_the_views_it_dropped(tmp_path, monkeypatch):
+    """``VIEWS_SQL`` drops every view before recreating it, so it must be atomic.
+
+    ``executescript`` commits as it goes, so a failure in the middle -- a locked
+    file, a damaged one -- left the tables present and every view gone. That reads
+    as "no usage recorded yet" on every panel rather than as a broken database,
+    and the next ``CREATE VIEW IF NOT EXISTS` never ran because the script died.
+    """
+    path = tmp_path / "usage.db"
+    conn = db.open_db(path)
+    db.ensure_schema(conn)
+    before = _views(conn)
+    assert before, "no views to lose"
+    # Break the script after the DROPs and before the first CREATE: that is the
+    # window in which the database has tables and no views.
+    monkeypatch.setattr(
+        db, "VIEWS_SQL",
+        db.VIEWS_SQL.replace("CREATE VIEW", "CREATE VIEW v_broken AS SELECT FROM;"
+                             "\nCREATE VIEW", 1))
+    with pytest.raises(sqlite3.Error):
+        db.ensure_schema(conn)
+    assert _views(conn) == before
+    # The failed script also must not leave a write transaction open behind it.
+    monkeypatch.undo()
+    assert db.ensure_schema(conn) == "current"
+    conn.close()
+
+
 def test_migrate_reports_a_locked_or_damaged_file_instead_of_a_no_op(tmp_path):
     path = tmp_path / "usage.db"
     path.write_bytes(b"this is not a database")

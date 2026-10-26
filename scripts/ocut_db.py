@@ -1031,7 +1031,17 @@ def ensure_schema(conn: sqlite3.Connection) -> str:
             snapshot(conn, reason="pre-schema-upgrade", db_path=path)
     conn.executescript(TABLES_SQL)
     _retire_undeclared_indexes(conn)
-    conn.executescript(VIEWS_SQL)
+    try:
+        # `VIEWS_SQL` drops each view before recreating it, so a failure in the
+        # middle left "tables there, views gone" -- which every panel reads as
+        # "nothing recorded yet" rather than as a broken database. One explicit
+        # transaction makes the rebuild all or nothing. The `BEGIN` has to live
+        # inside the script: `executescript` commits any pending transaction
+        # before it runs one.
+        conn.executescript("BEGIN;\n" + VIEWS_SQL + "\nCOMMIT;")
+    except sqlite3.Error:
+        conn.rollback()
+        raise
     conn.execute(
         "INSERT INTO meta(key, value) VALUES('schema_version', ?) "
         "ON CONFLICT(key) DO UPDATE SET value = excluded.value",

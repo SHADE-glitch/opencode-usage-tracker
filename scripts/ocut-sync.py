@@ -29,6 +29,11 @@ import sys
 import time
 from pathlib import Path
 
+try:
+    import fcntl
+except ImportError:                 # Windows has no flock; the sync runs unlocked
+    fcntl = None
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import ocut_db as db  # noqa: E402
 
@@ -1675,6 +1680,56 @@ def format_doc() -> str:
 
 # --- entry points ----------------------------------------------------------
 
+class SyncBusy(RuntimeError):
+    """Another ``ocut sync`` holds the run lock for this database."""
+
+
+def _lock_path(db_path) -> Path:
+    path = Path(db_path)
+    return path.with_name(path.name + ".lock")
+
+
+def _acquire_sync_lock(db_path) -> int | None:
+    """Hold an exclusive flock on ``<db>.lock`` for the whole run; None if unable.
+
+    Two syncs over one database read the same host rows and advance the same
+    cursors, so both can write one call twice before either commits. The lock is
+    a sidecar beside the tracker database -- never a file under the host's config
+    home -- and it is taken non-blocking: a second run says so instead of parking
+    a TUI worker thread behind a sync that may never finish. No ``fcntl`` or an
+    unwritable path means the sync proceeds unlocked rather than not at all.
+    """
+    if fcntl is None:
+        return None
+    path = Path(db_path)
+    try:
+        db.ensure_dir(path)
+        fd = os.open(str(_lock_path(path)), os.O_CREAT | os.O_RDWR, 0o644)
+    except OSError:
+        return None
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        os.close(fd)
+        raise SyncBusy(f"another ocut sync is running on {path} "
+                       f"(lock {_lock_path(path)})")
+    return fd
+
+
+def _release_sync_lock(fd) -> None:
+    if fd is None:
+        return
+    try:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
+def _unusable(exc: Exception) -> str:
+    """One sentence for a tracker database that cannot be read or written."""
+    return f"the tracker database is unusable: {exc}"
+
+
 def run(full: bool = False, quiet: bool = False, db_path=db.DB_PATH,
         host_db=None, host_config=None, plugin_events=None, home=None) -> dict:
     """Index the host database into the tracker. Never raises for a missing host.
@@ -1694,6 +1749,22 @@ def run(full: bool = False, quiet: bool = False, db_path=db.DB_PATH,
     than an env lookup for that reason: a test that forgot it would pass on a
     machine with no ``~/.agents`` and fail on one that has.
     """
+    try:
+        lock_fd = _acquire_sync_lock(db_path)
+    except SyncBusy as exc:
+        return {"ok": False, "error": str(exc), "unparsed_this_run": 0}
+    try:
+        return _run_locked(full=full, quiet=quiet, db_path=db_path,
+                           host_db=host_db, host_config=host_config,
+                           plugin_events=plugin_events, home=home)
+    finally:
+        _release_sync_lock(lock_fd)
+
+
+def _run_locked(full: bool = False, quiet: bool = False, db_path=db.DB_PATH,
+                host_db=None, host_config=None, plugin_events=None,
+                home=None) -> dict:
+    """``run`` with the lock held: the body, and the only place it is written."""
     # Refuse a database written by a newer build before opening it for writing.
     # `open_db` switches the file to WAL (a write), and the promise is that a
     # future file comes back byte-for-byte unchanged.
@@ -1702,7 +1773,10 @@ def run(full: bool = False, quiet: bool = False, db_path=db.DB_PATH,
                 "error": "the tracker database was written by a newer build; "
                          "this build will not modify it",
                 "unparsed_this_run": 0}
-    conn = db.open_db(db_path)
+    try:
+        conn = db.open_db(db_path)
+    except sqlite3.Error as exc:
+        return {"ok": False, "error": _unusable(exc), "unparsed_this_run": 0}
     try:
         status = db.ensure_schema(conn)
         if status == "newer":
@@ -1729,6 +1803,11 @@ def run(full: bool = False, quiet: bool = False, db_path=db.DB_PATH,
         finally:
             src.close()
         return stats
+    except sqlite3.Error as exc:
+        # A locked or damaged file is a state, not a crash: every panel still
+        # opens, and one sentence names what happened instead of a traceback out
+        # of a worker thread nobody is watching.
+        return {"ok": False, "error": _unusable(exc), "unparsed_this_run": 0}
     finally:
         # The TUI calls this from a worker thread every 30 seconds, so an
         # exception that skipped the close would leak a read-write connection on

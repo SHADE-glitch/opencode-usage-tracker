@@ -7,6 +7,7 @@ ocut-sync.py's registry block). Nothing in this file reads or writes
 override.
 """
 
+import fcntl
 import json
 import os
 import sqlite3
@@ -702,6 +703,33 @@ def test_a_completed_v2_message_with_no_usage_is_counted_not_dropped(
     got = {r["reason"]: r["count"] for r in rows(tracker, "unparsed")}
     assert got.get(sync.NO_TOKENS) == 1
     assert stats["unparsed_this_run"] == 1
+
+
+def test_a_second_sync_is_refused_while_the_run_lock_is_held(host, tracker):
+    """Two syncs over one database advance the same cursors and double-count.
+
+    The lock is a ``<db>.lock`` sidecar, never a file under the host's config
+    home. A held lock comes back as a status with a sentence in it, not as a
+    traceback: the caller is a TUI worker thread, and an exception there reaches
+    the user as "sync failed" with no reason.
+    """
+    run(host, tracker, quiet=True)          # create the database and its views
+    before = rows(tracker, "v_tools")
+    fd = os.open(str(tracker) + ".lock", os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        stats = run(host, tracker, quiet=True)
+    finally:
+        os.close(fd)
+    assert stats["ok"] is False
+    assert "another ocut sync" in stats["error"]
+    # The refusal touched nothing: the views the panels read are still there.
+    assert before and rows(tracker, "v_tools") == before
+
+
+def test_a_lock_that_cannot_be_taken_is_not_a_reason_to_stop(host, tracker):
+    """An unwritable sidecar path must not turn into "sync never runs"."""
+    assert sync._acquire_sync_lock(Path("/proc/nowhere/usage.db")) is None
 
 
 # --- cursors, idempotency and the mutating row -----------------------------
