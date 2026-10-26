@@ -2093,14 +2093,16 @@ Symptom  A custom window typed as the same date twice with both times left blank
          half-open span was `[00:00, 00:00)` — zero seconds wide — and the pane reported it as a
          quiet day.
 Change   An end date with no time names that whole day, so the upper bound is the following
-         midnight. An end *at* the start is the same empty span one keystroke away and is now
-         refused with a sentence rather than accepted.
+         midnight — the next *date*'s midnight, not 24 hours later: on the autumn change a
+         `timedelta` day lands at 23:00 of the same date and a one-day window loses its last
+         hour. An end *at* the start is the same empty span one keystroke away and is now refused
+         with a sentence rather than accepted.
 Evidence L0 2026-10-26: `test_a_blank_end_time_on_the_end_date_covers_that_whole_day` and
          `test_a_window_that_ends_where_it_starts_is_refused` — read red as a zero-width window
          before the change.
 Cost     A fixed window's label shows the next midnight as its end, which is what the half-open
          query means; an end at the start is no longer accepted.
-Commit   34167eb
+Commit   34167eb 3e413b6
 
 ### D-105 · 2026-10-26 · fix
 Symptom  With a filter on, the Usage note printed the rows it kept against the window's own request
