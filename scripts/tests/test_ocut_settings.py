@@ -178,6 +178,19 @@ def _config_path_under(env_extra, home):
     return Path(out)
 
 
+def test_the_suite_never_reads_the_config_file_it_is_not_handed(tmp_path):
+    """`CONFIG_PATH` is resolved at import, so no fixture argument can move it.
+
+    The host database, the host config home and the hook sidecar are all pinned
+    by `conftest.py` to paths that do not exist; this one was not, so a developer
+    with a real `~/.config/ocut/config.toml` ran the whole suite with their own
+    knobs while a clean runner ran it with the defaults — the same class of
+    difference the rest of the fixture exists to remove.
+    """
+    assert db.CONFIG_PATH.parent == tmp_path, db.CONFIG_PATH
+    assert not db.CONFIG_PATH.exists(), db.CONFIG_PATH
+
+
 def test_the_file_is_found_where_the_platform_says(tmp_path):
     home = tmp_path / "home"
     assert _config_path_under({}, home) == home / ".config" / "ocut" / "config.toml"

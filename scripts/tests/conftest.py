@@ -38,15 +38,21 @@ def no_real_machine(monkeypatch, tmp_path):
     ``HOST_CONFIG_DIR`` and ``HOST_DB`` were guarded per module before this file;
     the hook sidecar (``PLUGIN_EVENTS``) was not, so every ``ocut-sync.run()`` in
     the suite — the fixture builds and the app's own sync alike — folded the
-    developer's real plugin events into a fixture database. Guarding all three in
-    one place is what makes a missing ``host_config`` / ``host_db`` /
-    ``plugin_events`` argument fail identically everywhere instead of only on a
-    clean runner.
+    developer's real plugin events into a fixture database. ``CONFIG_PATH`` was
+    not either, and it is the one default no argument can override: it is
+    resolved when the module is imported. Guarding all four in one place is what
+    makes a missing ``host_config`` / ``host_db`` / ``plugin_events`` argument —
+    and the absence of a config file — fail identically everywhere instead of
+    only on a clean runner.
     """
     monkeypatch.setattr(db, "HOST_CONFIG_DIR", tmp_path / "no-such-config-home")
     monkeypatch.setattr(db, "HOST_DB", tmp_path / "no-such-host.db")
     monkeypatch.setattr(db, "PLUGIN_EVENTS",
                         tmp_path / "no-such-plugin-events.jsonl")
+    # `CONFIG_PATH` is an import-time expression, so it is the one default a
+    # fixture argument cannot override: a developer's own config.toml changed
+    # every default the suite ran with, and a runner's did not exist at all.
+    monkeypatch.setattr(db, "CONFIG_PATH", tmp_path / "no-such-config.toml")
     # ``Path.home()`` resolves HOME on POSIX and USERPROFILE on Windows; the CI
     # matrix is Linux-only but pinning both keeps the fixture honest elsewhere.
     # Set, not created: the reader treats a missing directory as an empty root,

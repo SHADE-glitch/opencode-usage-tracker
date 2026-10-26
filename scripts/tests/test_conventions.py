@@ -28,17 +28,8 @@ Standard library only.
 
 import re
 import subprocess
-import sys
 import unittest
 from pathlib import Path
-
-HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE))
-if (HERE / "_hermetic.py").exists():
-    # Tripwire, shared by every sibling test module: the suite must never open the
-    # real host database. This file touches only the working tree and `git ls-files`,
-    # but it is collected into the same run and installs the same guard.
-    import _hermetic  # noqa: E402,F401
 
 # The repository root, found by the one marker every clone has. Resolved this way
 # so the same file works from scripts/tests/ and from tests/ (see this repository's
