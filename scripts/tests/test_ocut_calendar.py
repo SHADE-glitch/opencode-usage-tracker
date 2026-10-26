@@ -257,6 +257,51 @@ def test_confirm_hands_back_a_window_made_from_the_two_typed_fields():
     assert window.end_ms > window.start_ms
 
 
+def test_a_blank_end_time_on_the_end_date_covers_that_whole_day():
+    """A same-day window typed as two dates and no times came back empty.
+
+    ``parse_datetime`` reads a blank time as the start of the day, so an upper
+    bound at 00:00 on the day the window ends is a half-open span of zero
+    seconds: the picker dismissed, the pane refreshed, and it said nothing
+    happened. An end date with no time names that whole day, so the bound is
+    the following midnight.
+    """
+    async def body(pilot, m, app):
+        m.query_one("#dr-start-date", Input).value = "03/10/2026"
+        m.query_one("#dr-start-time", Input).value = "00:00"
+        m.query_one("#dr-follow", Checkbox).value = False
+        m.query_one("#dr-end-date", Input).value = "03/10/2026"
+        m.query_one("#dr-end-time", Input).value = ""
+        await pilot.pause(0.3)
+        await pilot.click("#dr-ok")
+        await pilot.pause(0.3)
+    app = drive_modal(modal_at(), body)
+    window = app.result
+    assert isinstance(window, db.CustomWindow), window
+    assert window.start_ms == db.parse_datetime("03/10/2026", "", 2026), window
+    assert window.end_ms == db.parse_datetime("03/11/2026", "", 2026), window
+
+
+def test_a_window_that_ends_where_it_starts_is_refused():
+    """Two typed times on one date can still name an empty span.
+
+    The picker refused an end *before* the start and accepted an end *at* it,
+    which is a window no row can fall inside — the same empty pane the blank
+    end time produced, one keystroke away.
+    """
+    async def body(pilot, m, app):
+        m.query_one("#dr-start-date", Input).value = "03/10/2026"
+        m.query_one("#dr-start-time", Input).value = "12:00"
+        m.query_one("#dr-follow", Checkbox).value = False
+        m.query_one("#dr-end-date", Input).value = "03/10/2026"
+        m.query_one("#dr-end-time", Input).value = "12:00"
+        await pilot.pause(0.3)
+        await pilot.click("#dr-ok")
+        await pilot.pause(0.3)
+    app = drive_modal(modal_at(), body)
+    assert app.result == "nothing dismissed the modal", app.result
+
+
 def test_a_blank_start_is_all_time_and_a_following_end_stays_on_the_clock():
     async def body(pilot, m, app):
         m.query_one("#dr-start-date", Input).value = ""
