@@ -531,6 +531,47 @@ def test_the_project_ledger_takes_the_height_the_rows_leave(tracker, clock):
     drive(lambda: tui.TrackerApp(str(tracker), clock=clock), short, size=(120, 20))
 
 
+def test_the_tokens_sort_orders_by_the_number_the_column_shows(tmp_path, clock):
+    """`s` sorted on the host's `total_tokens` while the cell shows Usage Total.
+
+    The two disagree wherever the host's own total is not the parts summed, so the
+    list came out in an order no column on screen explained — and the column the
+    sort is named after sat in a different place than the sort claimed.
+    """
+    now = now_ms()
+    host = tmp_path / "sort-host.db"
+    conn = ts_sync.make_host(host)
+    ts_sync.add_session(conn, "ses_x", tokens=(0, 0, 0, 0, 0))
+    # Usage Total (prompt + completion + cache read) says heavy, then cheap; the
+    # host total says the opposite. Only one of those numbers is on the screen.
+    for mid, model, total, prompt in (("msg_cheap", "aaa-cheap", 9_000, 100),
+                                      ("msg_heavy", "zzz-heavy", 600, 500)):
+        ts_sync.add_message(conn, mid, "ses_x", model=model)
+        ts_sync.add_step(conn, f"prt_{model}", mid, "ses_x", ts=now - 5_000,
+                         tokens={"total": total, "input": prompt, "output": 10,
+                                 "reasoning": 0,
+                                 "cache": {"read": 0, "write": 0}})
+    conn.commit()
+    conn.close()
+    sort_db = tmp_path / "sort.db"
+    db.load_sync().run(db_path=sort_db, host_db=host,
+                       host_config=build_config(tmp_path / "sort-cfg"), quiet=True)
+
+    async def body(pilot, app):
+        await activate(app, pilot, "tab-tokens")
+        await pilot.press("s")            # requests
+        await pilot.press("s")            # tokens
+        await pilot.pause(0.6)
+        assert app._sort_label("tab-tokens") == "tokens"
+        table = app.query_one("#t-tokens", DataTable)
+        order = [str(table.get_cell_at((i, 0))) for i in range(table.row_count)]
+        assert order == ["zzz-heavy", "aaa-cheap"], order
+        shown = {str(table.get_cell_at((i, 0))): str(table.get_cell_at((i, 2)))
+                 for i in range(table.row_count)}
+        assert shown == {"zzz-heavy": "510", "aaa-cheap": "110"}, shown
+    drive(lambda: tui.TrackerApp(str(sort_db), clock=clock), body)
+
+
 def test_token_panels_print_the_hosts_own_step_numbers(tracker, clock):
     """The Tokens panel sums `model_calls` — the per-step granularity, not the rollup.
 

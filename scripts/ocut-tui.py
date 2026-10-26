@@ -232,6 +232,17 @@ def _usage_total_tokens(prompt, completion, cache_read, cache_write):
     return inp + completion + (cache_read or 0)
 
 
+def _token_usage_total(r):
+    """One Tokens row's Usage Total, from the four columns its cell is made of.
+
+    ``sort_fields`` names this instead of ``total_tokens``: the host total is a
+    different number, and ordering the list by it put the rows in an order no
+    column on screen explained.
+    """
+    return _usage_total_tokens(r["prompt_tokens"], r["completion_tokens"],
+                               r["cache_read"], r["cache_write"])
+
+
 # The fixed choices in the top bar's Select. "Custom…" is not a range: it opens
 # the date picker, which is the other control beside it. The two exist together
 # because a preset is one click and a custom span needs a calendar — folding them
@@ -450,7 +461,7 @@ ENTITY_TABS = (
               key_columns=("model", "provider"), always_all=True,
               count_key="responses", name_key="model",
               sort_fields=(("requests", "responses", True),
-                           ("tokens", "total_tokens", True),
+                           ("tokens", _token_usage_total, True),
                            ("name", None, False))),
 )
 ENTITY_BY_PANE = {tab.pane: tab for tab in ENTITY_TABS}
@@ -2151,18 +2162,30 @@ if HAVE_TEXTUAL:
             return tab.sort_fields if tab else ()
 
         def _sorted_rows(self, rows, fields, mode: int, name_key: str):
-            """Apply one declared sort mode; None-valued rows always sort last."""
+            """Apply one declared sort mode; None-valued rows always sort last.
+
+            A mode's key is a column name or a function of the row: a column the
+            screen *computes* (Tokens' Usage Total is four columns re-added) has no
+            stored field to name, and naming a neighbouring one sorted the list by
+            a number the person cannot see.
+            """
             if not mode or not fields:
                 return list(rows)
             _label, key, descending = fields[(mode - 1) % len(fields)]
             key = key or name_key
             if not key:
                 return list(rows)
-            present = [r for r in rows if r[key] is not None]
-            missing = [r for r in rows if r[key] is None]
-            present.sort(key=lambda r: (str(r[key]).lower()
-                                        if isinstance(r[key], str) else r[key]),
-                         reverse=descending)
+
+            def value(row):
+                return key(row) if callable(key) else row[key]
+
+            def order(row):
+                got = value(row)
+                return str(got).lower() if isinstance(got, str) else got
+
+            present = [r for r in rows if value(r) is not None]
+            missing = [r for r in rows if value(r) is None]
+            present.sort(key=order, reverse=descending)
             return present + missing
 
         def _sort_label(self, pane) -> str:
