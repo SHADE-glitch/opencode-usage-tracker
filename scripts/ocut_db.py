@@ -2109,6 +2109,29 @@ _USAGE_LOG_ORDER = {
 }
 
 
+def _usage_log_where(start_ts, end_ts, text):
+    """The ``WHERE`` the request log and its count share, so they cannot drift."""
+    where, params = _ts_where(start_ts, end_ts)
+    if text:
+        like = f"%{text}%"
+        where += (" AND (model LIKE ? OR provider LIKE ? OR project LIKE ?"
+                  " OR agent LIKE ?)")
+        params += [like, like, like, like]
+    return where, params
+
+
+def q_usage_request_log_count(conn, start_ts, end_ts, text=None) -> int:
+    """How many steps ``text`` matches in the window, ignoring the page cap.
+
+    The Usage note prints the rows it kept against this: the window's own request
+    count is the denominator only when nothing is filtered, and a note that used
+    it anyway said "5 of 9" about a filter that matched five of five.
+    """
+    where, params = _usage_log_where(start_ts, end_ts, text)
+    return conn.execute(
+        f"SELECT COUNT(*) FROM model_calls WHERE {where}", params).fetchone()[0]
+
+
 def q_usage_request_logs(conn, start_ts, end_ts, limit=100, offset=0,
                          text=None, order_by="recent"):
     """Per-step rows in the window (never re-reads the host).
@@ -2122,12 +2145,7 @@ def q_usage_request_logs(conn, start_ts, end_ts, limit=100, offset=0,
     request that exists on page 2. ``order_by`` is whitelisted for the same reason
     every other order here is.
     """
-    where, params = _ts_where(start_ts, end_ts)
-    if text:
-        like = f"%{text}%"
-        where += (" AND (model LIKE ? OR provider LIKE ? OR project LIKE ?"
-                  " OR agent LIKE ?)")
-        params += [like, like, like, like]
+    where, params = _usage_log_where(start_ts, end_ts, text)
     order = _USAGE_LOG_ORDER.get(order_by, _USAGE_LOG_ORDER["recent"])
     sql = (
         "SELECT ts, model, provider, variant, agent, prompt_tokens,"

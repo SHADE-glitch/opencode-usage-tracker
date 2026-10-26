@@ -2874,9 +2874,11 @@ if HAVE_TEXTUAL:
                     ]
                 parts.append(f"sort: {label}")
                 if query:
-                    matched = (f"{len(rows):,} of {total:,}" if total is not None
-                               else f"{len(rows):,} matches")
-                    parts.append(f'filter "{query}" · {matched}')
+                    matched = db.q_usage_request_log_count(conn, start, end, query)
+                    parts.append(
+                        f'filter "{query}" · '
+                        + (f"{len(rows):,} of {matched:,}" if matched > len(rows)
+                           else f"{matched:,} matches"))
                 elif total is not None and total > len(rows):
                     parts.append(f"showing {len(rows):,} of {total:,}")
                 note = " · ".join(parts)

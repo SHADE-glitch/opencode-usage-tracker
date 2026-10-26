@@ -702,6 +702,48 @@ def test_the_request_log_says_how_many_rows_it_is_showing(tracker, clock):
     drive(lambda: tui.TrackerApp(str(tracker), clock=clock), body)
     conn.close()
 
+def test_the_filter_note_counts_what_the_filter_matched(tracker, clock):
+    """The number after "of" was the window's request count, not the matches.
+
+    With a filter on, `5 of 12` read as five matching out of twelve in the
+    window: a denominator the filter never produced, and one that moved when an
+    unrelated request arrived. The note now counts the matches separately, and a
+    list that is not cut says `5 matches` rather than `5 of 5`.
+    """
+    conn = sqlite3.connect(tracker)
+    ts = int(clock() * 1000) - 60_000
+    for i in range(5):
+        conn.execute(
+            "INSERT INTO model_calls(call_id, model, provider, prompt_tokens,"
+            " completion_tokens, total_tokens, ts) VALUES(?,?,?,?,?,?,?)",
+            (f"prt_match_{i}", "aaa-model", "vendor", 10, 5, 15, ts - i))
+    for i in range(2):
+        conn.execute(
+            "INSERT INTO model_calls(call_id, model, provider, prompt_tokens,"
+            " completion_tokens, total_tokens, ts) VALUES(?,?,?,?,?,?,?)",
+            (f"prt_other_{i}", "bbb-model", "vendor", 10, 5, 15, ts - i))
+    conn.commit()
+
+    async def body(pilot, app):
+        await activate(app, pilot, "tab-usage")
+        app._tab_filters["tab-usage"] = "aaa-model"
+        app.refresh_data()
+        await pilot.pause(0.5)
+        note = " ".join(str(app.query_one("#usage-note").content).split())
+        assert 'filter "aaa-model" · 5 matches' in note, note
+        # The window's own count is 7 plus whatever the fixture recorded; the
+        # filter's denominator must not be any of it.
+        start, end = app._bounds_for("tab-usage")
+        window = conn.execute(
+            "SELECT COUNT(*) FROM model_calls"
+            " WHERE (? IS NULL OR ts >= ?) AND (? IS NULL OR ts <= ?)",
+            (start, start, end, end)).fetchone()[0]
+        assert window > 5, window
+        assert f"of {window:,}" not in note, note
+    drive(lambda: tui.TrackerApp(str(tracker), clock=clock), body)
+    conn.close()
+
+
 def test_the_cache_breakdown_uses_codebuddys_three_labels(tracker):
     """The cache breakdown carries CodeBuddy's three labels, not two.
 
