@@ -972,6 +972,13 @@ if HAVE_TEXTUAL:
                     self.query_one("#dr-start-time", Input).value, year)
                 end = None if follow else db.parse_datetime(
                     end_date, end_clock, year)
+                if end is not None and end_date.strip() and not end_clock.strip():
+                    # A date with no time names the whole day, so the upper bound
+                    # is the midnight *after* it. Reading it as that day's first
+                    # instant made a one-day window a zero-second half-open span,
+                    # which the pane reported as "nothing happened".
+                    end = int((db.parse_date(end_date, year)
+                               + timedelta(days=1)).timestamp() * 1000)
             except ValueError:
                 self.notify("Dates are MM/DD/YYYY, times HH:MM (24-hour)",
                             severity="error")
@@ -980,13 +987,6 @@ if HAVE_TEXTUAL:
                 self.notify("Set an end date, or tick 'End follows current time'",
                             severity="error")
                 return
-            if end is not None and end_date.strip() and not end_clock.strip():
-                # A date with no time names the whole day, so an upper bound is
-                # the midnight *after* it. Reading it as that day's first instant
-                # made a one-day window a zero-second half-open span, which the
-                # pane reported as "nothing happened" rather than as a mistake.
-                end = int((datetime.fromtimestamp(end / 1000)
-                           + timedelta(days=1)).timestamp() * 1000)
             if start is not None and end is not None and end <= start:
                 self.notify("End must be after start — that window is empty",
                             severity="error")
