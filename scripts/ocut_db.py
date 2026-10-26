@@ -509,11 +509,13 @@ _AGENT_NAMES_CTE = _names_cte("agent", "agent_usage", "agent_type")
 # installed and this tool reads it there and nowhere else.
 #
 # `owner_plugin` is also how an MCP server owns its tools and how a provider
-# owns its model, so the arm has to say which owners are plugins: a tool or
-# command the hook reported (`source='hook'`). Without that filter the Plugins
-# panel listed `basic-memory`, `context7` and `huoshan` -- two MCP servers and a
-# provider -- as plugins with state `removed`, i.e. as things that had been
-# uninstalled. Measured on this host 2026-10-21: 3 of the panel's 4 rows.
+# owns its model, so the arm has to say which owners are plugins: a tool,
+# command, skill or agent row whose source is not MCP (`source <> 'mcp'`). The
+# `kind` list keeps a provider's model rows out; the source check keeps an MCP
+# server's tools out. Without both the Plugins panel listed `basic-memory`,
+# `context7` and `huoshan` -- two MCP servers and a provider -- as plugins with
+# state `removed`, i.e. as things that had been uninstalled. Measured on this
+# host 2026-10-21: 3 of the panel's 4 rows.
 _PLUGIN_NAMES_CTE = (
     "WITH names AS ("
     " SELECT name, MAX(installed) AS installed, MAX(ever_used) AS ever_used"
@@ -1235,10 +1237,11 @@ def q_agents(conn, limit=None, start_ts=None, end_ts=None):
 def q_mcp(conn, limit=None, start_ts=None, end_ts=None):
     """One row per (server, tool) pair, from the union of configured and used.
 
-    A configured server with no recorded tool yet appears once with ``tool`` NULL;
-    the join deliberately matches ``p.tool IS NULL`` so that row still reports the
-    server's whole call count rather than dropping it (measured on this host: 2
-    configured servers, 467 attributed calls).
+    A configured server with no recorded tool yet appears once with ``tool`` NULL.
+    The join matches the exact pair, so that row reports no calls: widening it to
+    ``OR p.tool IS NULL`` is what ``v_mcp`` does, where a server-level row carries
+    the whole server's count. Here the row exists to list the server, not to
+    borrow another tool's calls.
     """
     on_time, params = _on_time(_time_conds(start_ts, end_ts, col="m.ts"))
     sql = (f"{_MCP_NAMES_CTE}"

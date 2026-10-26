@@ -365,7 +365,7 @@ class EntityTab(NamedTuple):
     # The raw row key whose value is this tab's windowed count, for the boundary
     # filter and the summary line.
     count_key: str = "calls"
-    # (label, raw field, descending) cycled by `o`; the tab's query order is mode 0.
+    # (label, raw field, descending) cycled by `s`; the tab's query order is mode 0.
     sort_fields: tuple = _SORT_CALLS
     # The raw field that names a row, used by the `name` sort mode. A None key
     # means "the first sort field's name"; spelled explicitly rather than guessed.

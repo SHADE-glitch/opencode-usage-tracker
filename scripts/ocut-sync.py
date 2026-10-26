@@ -1821,9 +1821,9 @@ def _run_locked(full: bool = False, quiet: bool = False, db_path=db.DB_PATH,
         # of a worker thread nobody is watching.
         return {"ok": False, "error": _unusable(exc), "unparsed_this_run": 0}
     finally:
-        # The TUI calls this from a worker thread every 30 seconds, so an
-        # exception that skipped the close would leak a read-write connection on
-        # every failed poll rather than once per process.
+        # The TUI calls this from a worker thread -- on mount and again on `r` --
+        # so an exception that skipped the close would leak a read-write
+        # connection on every failed sync rather than once per process.
         conn.close()
 
 
