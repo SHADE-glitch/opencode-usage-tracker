@@ -17,6 +17,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import sqlite3
 import sys
 from pathlib import Path
@@ -277,6 +278,73 @@ def test_show_mcp_refuses_to_merge_two_servers_and_honours_server(tmp_path, caps
     text = capsys.readouterr().out
     assert "mcp alpha · search" in text
     assert "alpha" in text and "beta" not in text
+
+
+def test_format_write_refreshes_the_generated_block_in_place(tmp_path, monkeypatch):
+    """``--write`` rewrote a file that does not exist, so it could only ever fail.
+
+    It named ``docs/maintenance/opencode-format.md``; the generated block belongs
+    in ``opencode-interface.md``, the document a reader is sent to for "which host
+    names does this build read". The target is a module constant so a case can
+    point it at a copy: ``--write`` rewrites a tracked file, and running it in
+    place would leave the repository modified for the length of the run.
+    """
+    doc = tmp_path / "opencode-interface.md"
+    doc.write_text(f"# Interface\n\n{stats.FORMAT_BEGIN}\nstale\n{stats.FORMAT_END}"
+                   "\n\ntail\n", encoding="utf-8")
+    monkeypatch.setattr(stats, "FORMAT_DOC", doc)
+
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        assert stats.main(["format", "--write"]) == 0
+    body = doc.read_text(encoding="utf-8")
+    assert "stale" not in body
+    assert "**Host tables read" in body        # the registry, not the old text
+    assert body.startswith("# Interface")      # the prose around it survives
+    assert body.endswith("tail\n")
+    assert str(doc) in out.getvalue()
+
+
+def test_format_write_refuses_a_document_without_the_markers(tmp_path, monkeypatch):
+    """Refusing beats appending: a generated section in hand-written prose states
+    two things at once. The refusal names the file it looked in."""
+    doc = tmp_path / "no-markers.md"
+    doc.write_text("# prose only\n", encoding="utf-8")
+    monkeypatch.setattr(stats, "FORMAT_DOC", doc)
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err):
+        assert stats.main(["format", "--write"]) == 1
+    assert str(doc) in err.getvalue()
+    assert doc.read_text(encoding="utf-8") == "# prose only\n"
+
+
+def test_the_interface_document_carries_the_generated_markers():
+    """The shipped document must keep them, or ``--write`` can only refuse."""
+    text = stats.FORMAT_DOC.read_text(encoding="utf-8")
+    assert stats.FORMAT_BEGIN in text and stats.FORMAT_END in text
+
+
+def test_the_checked_in_block_is_what_the_registry_renders():
+    """A generated block nobody regenerates is a hand-copied list with extra steps.
+
+    This is the check that makes ``--write`` worth having: edit the registry and
+    the document goes red until the block is refreshed.
+    """
+    text = stats.FORMAT_DOC.read_text(encoding="utf-8")
+    _, _, rest = text.partition(stats.FORMAT_BEGIN + "\n")
+    block, _, _tail = rest.partition(stats.FORMAT_END)
+    # `conftest.py`'s hermetic fixture repoints the host database and the sidecar
+    # at temporary files, so a path is compared by position rather than by value:
+    # everything else in the block is verbatim. The `~` form is a separate
+    # assertion below, because an absolute path here would publish this machine's
+    # user name in a checked-in document.
+    pathy = re.compile(r"`(?:~|/)[^`]*`")
+    got = [pathy.sub("`<path>`", ln)
+           for ln in block.splitlines()]
+    want = [pathy.sub("`<path>`", ln)
+            for ln in stats.db.load_sync().format_doc().splitlines()]
+    assert got == want
+    assert "`~/." in block
 
 
 def test_health_labels_the_sidecar_in_bytes_and_the_format_as_a_marker(tmp_path):

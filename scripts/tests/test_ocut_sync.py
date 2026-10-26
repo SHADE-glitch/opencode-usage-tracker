@@ -1759,7 +1759,10 @@ def test_format_doc_does_not_claim_a_field_the_registry_dropped():
     for gone in ("prompt_cache_hit_tokens", "conversation_request_id",
                  "marketplace", "tokenDelta"):
         assert gone not in doc
-    assert str(sync.db.PLUGIN_EVENTS) in doc
+    # Rendered with `~` rather than this machine's home: the document is public
+    # and checked in, so an absolute prefix is wrong for every other reader.
+    assert sync._display_path(sync.db.PLUGIN_EVENTS) in doc
+    assert str(Path.home()) not in doc
     assert "byte offset" in doc
 
 

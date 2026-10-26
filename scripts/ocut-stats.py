@@ -628,6 +628,12 @@ def cmd_vacuum(args) -> int:
 
 FORMAT_BEGIN = "<!-- BEGIN generated: ocut format -->"
 FORMAT_END = "<!-- END generated -->"
+# The document the generated block lives in. A module constant rather than a
+# literal inside the command so a test can point it at a copy: `--write` rewrites
+# a tracked file, and a case that ran it in place would leave the repository
+# modified for the length of the run.
+FORMAT_DOC = (Path(__file__).resolve().parents[1]
+              / "docs" / "maintenance" / "opencode-interface.md")
 
 
 def _replace_generated_block(doc: Path, body: str) -> bool:
@@ -652,13 +658,16 @@ def cmd_format(args) -> int:
     Generated from the parser's registry instead of written by hand, because a
     hand-copied list is how `schema_version` became a value nothing read: a
     description that stopped matching the code and stayed checked in anyway.
+    `--write` refreshes that block in `FORMAT_DOC` --
+    `docs/maintenance/opencode-interface.md`, the document a reader is sent to
+    for "which host names does this build read" -- and refuses a file whose
+    markers are gone rather than appending a second copy of the list.
     """
     body = db.load_sync().format_doc()
     if not args.write:
         print(body, end="")
         return 0
-    doc = (Path(__file__).resolve().parents[1]
-           / "docs" / "maintenance" / "opencode-format.md")
+    doc = FORMAT_DOC
     if not _replace_generated_block(doc, body):
         print(f"{doc} has no generated block markers — refusing to rewrite it",
               file=sys.stderr)

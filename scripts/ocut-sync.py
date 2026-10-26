@@ -1558,6 +1558,16 @@ def ingest_plugin_events(conn, counts: Counts, events_path=None) -> dict:
 
 # --- format document -------------------------------------------------------
 
+def _display_path(path) -> str:
+    """A path as a document should carry it: ``~`` for this machine's home.
+
+    ``format_doc`` is checked in and public, so a rendered absolute path would
+    publish this machine's user name and be wrong for every other reader.
+    """
+    text, home = str(path), str(Path.home())
+    return "~" + text[len(home):] if text.startswith(home + os.sep) else text
+
+
 def format_doc() -> str:
     """Render the format registry as markdown (``ocut format``).
 
@@ -1569,7 +1579,8 @@ def format_doc() -> str:
         return f"- **{title}**: {items}\n"
 
     return "".join([
-        f"- **Host database**: `{db.HOST_DB}` (opened `mode=ro`, never written)\n",
+        f"- **Host database**: `{_display_path(db.HOST_DB)}` (opened `mode=ro`, "
+        "never written)\n",
         f"- **Host tables read (v1)**: `{TABLE_SESSION}`, `{TABLE_MESSAGE}`, "
         f"`{TABLE_PART}`\n",
         f"- **Host tables read (v2, preferred when present)**: "
@@ -1664,7 +1675,8 @@ def format_doc() -> str:
         f"(the host rewrites its rollup). In v2, `{TABLE_MESSAGE_V2}` is read by "
         f"rowid with a holdback at the first message that is still streaming or "
         f"has a non-final tool entry, and `{TABLE_SESSION_V2}` is re-read in full\n",
-        f"- **Plugin-usage sidecar**: `{db.PLUGIN_EVENTS}` — append-only JSONL, read "
+        f"- **Plugin-usage sidecar**: `{_display_path(db.PLUGIN_EVENTS)}` — "
+        f"append-only JSONL, read "
         f"by byte offset (`{STATE_PLUGIN_EVENTS}`); record types "
         f"`{EVENT_SURFACE}` (a plugin's tool/command ids), `{EVENT_CALL}` (one "
         f"invocation), `{EVENT_RESET}` (the hook truncated an oversized file)\n",

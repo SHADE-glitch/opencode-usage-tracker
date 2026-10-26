@@ -340,7 +340,8 @@ ocut format  [--write]
 - `backup` / `restore` — snapshot the database, or list and restore a snapshot (see
   [Backups](#-backups)).
 - `format` — print the OpenCode format-dependency surface, read out of the parser's
-  registry. `--write` refreshes a generated block **already present** in a file, and
+  registry. `--write` refreshes the generated block **already present** in
+  [`docs/maintenance/opencode-interface.md`](docs/maintenance/opencode-interface.md), and
   refuses to create one: the markers are the opt-in, so the flag cannot bring a document
   into existence that nobody asked for.
 

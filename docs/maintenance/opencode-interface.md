@@ -87,3 +87,47 @@ function` gets called as a factory, which aborts the whole plugin load and stops
 recording silently. v1 calls `server`; v2 calls `setup(ctx)` and ignores `server`, and its
 loader rejects a default without `setup` or `effect`. `scripts/tests/test_ocut_hook.py`
 keeps that true.
+
+## 7. The declarations this build makes (generated)
+
+The registry at the top of `scripts/ocut-sync.py` is the list; this block is its rendering.
+Refresh it with `ocut format --write` after editing the registry — the command rewrites
+what is between the markers and refuses a document that has lost them, because a generated
+list appended to hand-written prose states two things at once.
+
+<!-- BEGIN generated: ocut format -->
+- **Host database**: `~/.local/share/opencode/opencode.db` (opened `mode=ro`, never written)
+- **Host tables read (v1)**: `session`, `message`, `part`
+- **Host tables read (v2, preferred when present)**: `session_v2`, `session_message` — v1 is not read at all in that layout, because the same history would be indexed twice under different call ids
+- **v2 message types that produce rows**: `assistant`
+- **v2 message types known and deliberately not recorded**: `compaction`, `idle`, `model-switched`, `synthetic`, `system`, `user`
+- **v2 message fields**: `agent`, `content`, `cost`, `finish`, `model`, `time`, `tokens`; `content[].state.content` (tool output) and `state.error` are named and never read
+- **v2 tool entry fields**: `id`, `name`, `state`, `time`, `type` + state `content`, `error`, `input`, `metadata`, `status` + time `completed`, `created`, `ran`
+- **v2 model fields**: `id`, `providerID`, `variant`
+- **v2 tool argument names read**: `id`
+- **Part types that produce rows**: `step-finish`, `tool`
+- **Part types known and deliberately not recorded**: `agent`, `compaction`, `file`, `patch`, `reasoning`, `step-start`, `text`
+- **Tool part fields**: `tool` + state `error`, `input`, `metadata`, `output`, `status`, `time`, `title`, of which `output`, `title`, `metadata` and `error` are never read
+- **Tool state times**: `end`, `start`
+- **Final tool statuses**: `completed`, `error` (non-final `running` holds the cursor)
+- **Tool argument names read**: `agent`, `name`, `subagent_type`
+- **Specialising tool names**: `skill` -> skill_usage, `subagent`, `task` -> agent_usage
+- **MCP name shape**: `<server>_<tool>`, resolved against the `opencode.json` `mcp` keys, longest prefix first. A name no configured server owns stays `builtin` and is NOT counted as drift (`list_mcp_resources` is a builtin with exactly that shape). `run() reports the two numbers instead: `mcp_shape_unowned_calls` and `rows_mcp`
+- **step-finish fields**: `cost`, `reason`, `tokens`
+- **step-finish tokens fields**: `cache`, `input`, `output`, `reasoning`, `total`
+- **step-finish cache fields**: `read`, `write`
+- **usage leaf fields checked**: `cache.read`, `cache.write`, `input`, `output`, `reasoning`, `total`
+- **fields that make a row carry usage**: `input`, `output`
+- **Message fields read**: `agent`, `modelID`, `providerID`, `variant`
+- **Session columns selected** (a whitelist, not a filter): `id`, `project_id`, `directory`, `agent`, `model`, `parent_id`, `cost`, `tokens_input`, `tokens_output`, `tokens_reasoning`, `tokens_cache_read`, `tokens_cache_write`, `version`, `time_created`, `time_updated`
+- **session.model fields**: `id`, `providerID`, `variant`
+- **Inventory sources**: `skills/**/SKILL.md` frontmatter `name`, `version`, `agents/*.md`, `command/*.md`, and the `opencode.json` keys `command`, `mcp`, `plugin`, `provider`
+- **Skill roots outside the config home**: `~/.claude/skills/**/SKILL.md` · `~/.agents/skills/**/SKILL.md` — the host loads these ahead of its own config, so reading only the config home was not a narrower version of the truth. Dotfiles and symlinked directories are both followed (`dot: true`, `symlink: true` on the host's side). The same block also covers the per-project walk (`.claude` / `.agents` from a session directory up to its worktree root), `~/.opencode`, `$OPENCODE_CONFIG_DIR` and `skills.paths` / `skills.urls`; those need a session directory to start from or download something, and are recorded as a limitation rather than guessed at
+- **Skill never on disk**: `customize-opencode` — the host registers it before it scans anything, served from the binary's own virtual filesystem (`location` is the sentinel `<built-in>`). Inventoried with `source` `builtin` so it does not read as `removed`
+- **Skill-root flags the host honours**: `OPENCODE_DISABLE_EXTERNAL_SKILLS` turns off every external root; `OPENCODE_DISABLE_CLAUDE_CODE` / `OPENCODE_DISABLE_CLAUDE_CODE_SKILLS` turns off `~/.claude` only. A root the host is told to ignore is not inventoried either — otherwise the reader would report a skill installed that the model cannot be offered
+- **MCP tool reconciliation**: a `<server>_<tool>` name in `tool_calls` whose prefix matches a configured server becomes an installed `tool` row owned by that server. It is reconciled against the history *already* in the database, which `scan_inventory` runs before the transcripts are indexed — so a tool seen for the first time appears on the **next** sync, the same one-cycle delay as any other newly-seen name
+- **Kinds this reader cannot census**: `agent`, `tool`. OpenCode's builtin tool and agent ids live in its compiled registry; there is no file on disk that enumerates them, and the API that would answer needs the server running. A name in those kinds with no inventory row therefore reads `not reported` rather than `removed` — see `db.ENTITY_CENSUS`
+- **Cursor rules**: `part` by rowid with holdback at the first non-final tool part (cap `5000` rows), batch `2000` rows, message lookups in chunks of `400`; `session` re-read in full each run (the host rewrites its rollup). In v2, `session_message` is read by rowid with a holdback at the first message that is still streaming or has a non-final tool entry, and `session_v2` is re-read in full
+- **Plugin-usage sidecar**: `~/.local/share/opencode-usage-tracker/plugin-events.jsonl` — append-only JSONL, read by byte offset (`plugin-events`); record types `surface` (a plugin's tool/command ids), `call` (one invocation), `reset` (the hook truncated an oversized file)
+- **Unparsed reasons counted**: `unparseable_part_data`, `unparseable_message_data`, `step_finish_without_tokens`, `tool_part_without_name`, `skill_call_without_name`, `task_call_without_subagent_type`, `step_finish_message_row_absent`, `unknown_part_type`, `unknown_message_type`, `part_left_running`, `unparseable_plugin_event`, and per name for `unknown_part_type:<type>` / `unknown_message_type:<type>`
+<!-- END generated -->

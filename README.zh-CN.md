@@ -295,8 +295,9 @@ ocut format  [--write]
   计数、已索引的合计，以及这个命令存在的意义——`unparsed` 计数。一次「什么都没认领」的运行照样会
   打印 "done"；`health` 是格式变化变得可见的地方。
 - `backup` / `restore`：给库做快照，或列出并恢复一份快照（见[备份](#-备份)）。
-- `format`：打印 OpenCode 格式依赖面，从解析器的注册表读出。`--write` 刷新 `docs/maintenance/`
-  里那个生成块。
+- `format`：打印 OpenCode 格式依赖面，从解析器的注册表读出。`--write` 刷新
+  [`docs/maintenance/opencode-interface.md`](docs/maintenance/opencode-interface.md) 里的生成块；
+  它只刷新**已经存在**的标记，不会新建一份文档：标记就是许可。
 
 全局取值参数（`--db`、`--kind`、`--limit`、`--host-db`、`--host-config`、`--plugin-events`、
 `--server`）可以放在子命令**之前或之后**：`ocut --limit 5 tools` 与 `ocut tools --limit 5`
