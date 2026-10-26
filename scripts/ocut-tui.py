@@ -397,7 +397,7 @@ def _token_row(r, kind):
     read/input/write."""
     hit = db.cache_hit_rate(r["cache_read"], r["prompt_tokens"],
                             r["cache_write"])
-    return [r["model"], db.provider_label(r["provider"]),
+    return [r["model"] or "-", db.provider_label(r["provider"]),
             fmt_n(_usage_total_tokens(r["prompt_tokens"],
                                       r["completion_tokens"],
                                       r["cache_read"], r["cache_write"])),
@@ -1428,9 +1428,14 @@ if HAVE_TEXTUAL:
 
         @property
         def scope(self) -> str:
-            """The Tokens row this screen was opened from, as it was labelled."""
+            """The Tokens row this screen was opened from, as it was labelled.
+
+            ``model`` is the row key's sentinel for a stored NULL, so it reads
+            ``-`` here exactly as the row it was opened from does.
+            """
             label = db.provider_label(self.provider or None)
-            return f"{self.model} · {label}" if label != "-" else self.model
+            model = self.model or "-"
+            return f"{model} · {label}" if label != "-" else model
 
         def compose(self) -> ComposeResult:
             yield TopBar(f"Model responses · {self.scope}")

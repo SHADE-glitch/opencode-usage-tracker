@@ -386,6 +386,55 @@ def test_a_call_row_opens_its_own_record_and_prints_no_prose(tracker, clock):
     conn.close()
 
 
+def test_a_row_with_no_model_opens_only_the_steps_that_have_no_model(
+        tmp_path, clock):
+    """A Tokens row's key carries ``""`` for a NULL model, and ``""`` meant "no filter".
+
+    A step whose parent message row is gone has no model (``MESSAGE_ROW_ABSENT``),
+    so its Tokens row has no model name to show. Opening that row queried every
+    model's steps: the list showed another model's work, and the header above it
+    counted that work, while the row it came from said one request.
+    """
+    now = tui_tests.now_ms()
+    host = tmp_path / "tokens-host.db"
+    conn = ts_sync.make_host(host)
+    ts_sync.add_session(conn, "ses_x", tokens=(0, 0, 0, 0, 0))
+    ts_sync.add_message(conn, "msg_x", "ses_x")
+    ts_sync.add_step(conn, "prt_named", "msg_x", "ses_x", ts=now - 1_000)
+    ts_sync.add_step(conn, "prt_orphan", "msg_x", "ses_x", ts=now - 2_000,
+                     message_present=False)
+    conn.commit()
+    conn.close()
+    tokens_db = tmp_path / "tokens.db"
+    db.load_sync().run(db_path=tokens_db, host_db=host,
+                       host_config=build_config(tmp_path / "tokens-cfg"),
+                       quiet=True)
+
+    conn = conn_of(tokens_db)
+    got = {(r["model"], r["responses"]) for r in db.q_model_tokens(conn)}
+    assert got == {("model-x", 1), (None, 1)}, got
+    # "" is the row key's sentinel for NULL, and it must mean "the NULL model",
+    # not "every model"; a named model and no model at all are still different.
+    assert [r["call_id"] for r in db.q_model_calls(conn, model="")] == ["prt_orphan"]
+    assert db.q_model_summary(conn, "")["responses"] == 1
+    assert len(db.q_model_calls(conn)) == 2        # no model named: still all steps
+
+    async def body(pilot, app):
+        await tui_tests.activate(app, pilot, "tab-tokens")
+        table = app.query_one("#t-tokens", DataTable)
+        index = next(i for i in range(table.row_count)
+                     if str(table.get_cell_at((i, 0))) == "-")
+        screen = await open_row(app, pilot, "#t-tokens", index)
+        assert isinstance(screen, tui.ModelResponsesScreen), type(screen)
+        assert screen.model == "", screen.model
+        assert screen.scope == "-", screen.scope
+        rows = rows_of(screen.query_one("#resp-table", DataTable))
+        assert [r[1] for r in rows] == ["-"], rows
+        assert "1 response" in text_of(screen, "#resp-summary")
+    tui_tests.drive(make_app(tokens_db, clock), body)
+    conn.close()
+
+
 def test_an_absent_field_reads_as_a_dash_never_as_zero(tracker, clock):
     """NULL is "the host did not report it"; 0 would be a measurement of the call.
 

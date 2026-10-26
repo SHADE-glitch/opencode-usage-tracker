@@ -1709,13 +1709,14 @@ def q_model_tokens(conn, start_ts=None, end_ts=None):
 def _model_provider_conds(model=None, provider=None):
     """Predicates scoping a model query to one Tokens row, or ``[]`` for all.
 
-    The row key carries the stored provider, and ``""`` is the sentinel for a
-    NULL one (a step whose message named no provider). ``IS ?`` compares like
-    ``=`` but also matches NULL, so the empty sentinel needs no second spelling.
+    ``None`` is "no condition"; ``""`` is the row key's sentinel for a stored NULL
+    (a step whose message row is gone names no model). ``IS ?`` compares like
+    ``=`` but also matches NULL, so one spelling covers both -- and a NULL row's
+    drill-down stays scoped to it instead of opening every model's steps.
     """
     conds: list = []
-    if model:
-        conds.append(("model = ?", model))
+    if model is not None:
+        conds.append(("model IS ?", model or None))
     if provider is not None:
         conds.append(("provider IS ?", provider or None))
     return conds
