@@ -631,7 +631,7 @@
       {
         "model": "step-3",
         "provider": "fixture-vendor",
-        "requests": 17,
+        "requests": 18,
         "usage_total": {
           "cbut": 2460,
           "ocut": 2640,
@@ -1059,5 +1059,17 @@
       }
     ],
     "ambiguous_hour_note": "parse_datetime must resolve the gap and the repeated hour exactly like the stdlib call it is built on: the pre-jump 01:30 is EST, the post-jump 03:30 is EDT, and the repeated 01:30 in November is the first pass (fold=0, EDT)."
+  },
+  "family_contract": {
+    "note": "USAGE_RANGES is copied verbatim into all four repositories (cbut_db, ocut_db, qcut_db and aut_windows): the presets a tracker accepts and the presets the board offers must be one table, or 7d means two different things. Pinned here because a preset added in one repository is invisible to the other three, and neither side would fail on its own.",
+    "ranges": {
+      "1d": 1,
+      "2d": 2,
+      "3d": 3,
+      "7d": 7,
+      "14d": 14,
+      "30d": 30,
+      "all": null
+    }
   }
 }
