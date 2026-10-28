@@ -10,7 +10,9 @@ drift from the code — is unchanged.
 from __future__ import annotations
 
 import re
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]      # repo root
@@ -92,6 +94,79 @@ _STATUS_RE = re.compile(
 def status_codes(path: Path) -> set[str]:
     return {m.group(1) or m.group(2) or m.group(3)
             for m in _STATUS_RE.finditer(path.read_text(encoding="utf-8"))}
+
+
+# --- every link in every document ------------------------------------------
+# A link in a document promises that something is there, and until this guard nothing
+# checked one: the English README's cross-file anchor into the Chinese page
+# (`README.zh-CN.md#known-limitations`) and its in-page `#-backups` were both
+# unverified, and a renamed heading is invisible in a diff.
+FENCE = re.compile(r"^(?:```|~~~).*?^(?:```|~~~)", re.M | re.S)
+HEADING = re.compile(r"^#{1,6}\s+(.*?)\s*$", re.M)
+LINK = re.compile(r"\[[^\]]*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
+EXTERNAL = ("http://", "https://", "mailto:", "ftp://")
+# GitHub's anchor: lowercase, drop everything that is not a letter, digit, space or
+# hyphen, then spaces to hyphens. Emoji disappear with it — but the variation selector
+# and zero-width joiner survive, hiding inside the anchor.
+_ANCHOR_KEEP = re.compile(r"[^\w \-️‍]+", re.U)
+# A heading is not the only way to mint an anchor. `README.zh-CN.md` carries
+# `<a name="known-limitations"></a>` above `## 🚧 已知限制` on purpose: the English
+# page links `README.zh-CN.md#known-limitations`, and a translated heading would
+# otherwise strand every reader arriving from the other language. A guard that only
+# read headings called that link dead on three pages.
+EXPLICIT_ANCHOR = re.compile(r"<[a-z][^>]*?\b(?:name|id)\s*=\s*[\"']([^\"']+)[\"']", re.I)
+
+
+def prose(text):
+    """The markdown with fenced blocks removed: a `#` in a snippet is not a link."""
+    return FENCE.sub("", text)
+
+
+def anchor_of(heading):
+    return _ANCHOR_KEEP.sub("", heading.strip().lower()).replace(" ", "-")
+
+
+def anchors_of(text):
+    """Every anchor the document mints: one per heading, plus the explicit ones."""
+    body = prose(text)
+    return ({anchor_of(m.group(1)) for m in HEADING.finditer(body)}
+            | set(EXPLICIT_ANCHOR.findall(body)))
+
+
+def tracked_docs():
+    """Every tracked Markdown file, as absolute paths."""
+    out = subprocess.run(["git", "ls-files", "*.md"], cwd=ROOT,
+                         capture_output=True, text=True, check=True)
+    return [ROOT / name for name in out.stdout.split() if (ROOT / name).is_file()]
+
+
+def broken_links(docs, root=ROOT):
+    """Every relative link that points at nothing, and every fragment that misses."""
+    anchors = {}
+    problems = []
+    for src in docs:
+        for target in LINK.findall(prose(src.read_text(encoding="utf-8"))):
+            if target.startswith(EXTERNAL) or target.startswith("<"):
+                continue
+            path, _, fragment = target.partition("#")
+            dest = (src.parent / path).resolve() if path else src.resolve()
+            try:
+                dest.relative_to(root)
+            except ValueError:
+                continue          # outside this repository: not ours to check
+            if not dest.exists():
+                problems.append("%s: %s -> no such file"
+                                % (src.relative_to(root), target))
+                continue
+            if not fragment or dest.is_dir() or dest.suffix != ".md":
+                continue          # a directory or a source file: no headings to land on
+            if dest not in anchors:
+                anchors[dest] = anchors_of(dest.read_text(encoding="utf-8"))
+            if fragment not in anchors[dest]:
+                problems.append("%s: %s -> %s has no heading `%s`"
+                                % (src.relative_to(root), target,
+                                   dest.relative_to(root), fragment))
+    return problems
 
 
 def _text():
@@ -366,6 +441,48 @@ def test_docs_cross_link_so_no_file_is_an_orphan():
         assert "README.md" in text and "README.zh-CN.md" in text, (
             f"{path.name} does not point back at the documentation"
         )
+
+
+def test_every_relative_link_in_every_document_resolves():
+    """A link whose heading was renamed renders as a dead link on GitHub.
+
+    The cross-file case is the one nothing else here can see: the English README
+    points into the Chinese page, so a heading translated differently strands a
+    reader arriving from the other language.
+    """
+    docs = tracked_docs()
+    assert len(docs) >= 10, f"git ls-files returned almost no Markdown: {docs}"
+    problems = broken_links(docs)
+    assert problems == [], ("a document points at something that is not there:\n  "
+                            + "\n  ".join(problems))
+
+
+def test_the_link_checker_can_report_a_break():
+    """Control: a missing file, a missed fragment, and links that are fine.
+
+    An instrument that cannot report a known break is not guarding anything — and a
+    fenced example of a broken link is not a link.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / "target.md").write_text("## Real\n", encoding="utf-8")
+        page = root / "page.md"
+        page.write_text(
+            "## Real\n\n"
+            "[ok](#real)\n"
+            "[across](target.md#real)\n"
+            "[dead](#nowhere)\n"
+            "[nofile](missing.md)\n"
+            "[nofrag](target.md#nowhere)\n"
+            "\n```\n[fenced](#nowhere)\n```\n",
+            encoding="utf-8")
+        problems = broken_links([page], root=root)
+
+    assert problems == [
+        "page.md: #nowhere -> page.md has no heading `nowhere`",
+        "page.md: missing.md -> no such file",
+        "page.md: target.md#nowhere -> target.md has no heading `nowhere`",
+    ], f"the checker missed a break, invented one, or read a fenced example: {problems}"
 
 
 # The three files that answer "what does this depend on, and how do I re-check it".
