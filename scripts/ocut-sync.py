@@ -27,7 +27,7 @@ import re
 import sqlite3
 import sys
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 try:
     import fcntl
@@ -101,6 +101,10 @@ TOOL_TIME_FIELDS = frozenset({"start", "end"})
 # The two argument names this project is allowed to look at. Every other tool
 # argument is a file path, a shell command or a prompt.
 SKILL_ARG_FIELDS = frozenset({"name"})
+# The `read` tool's path argument. Read only to recognise a direct read of
+# `.../SKILL.md`: the value is dropped and the skill name is the card's parent
+# directory. This is the one path this project reads, and it is never stored.
+READ_ARG_FIELDS = frozenset({"filePath"})
 # The subagent tool names its target differently in each layout: v1's `task`
 # takes `subagent_type`, v2's `subagent` takes `agent` (measured on this host:
 # `{"agent":"general","background":true,...}`). Reading only the v1 name dropped
@@ -600,6 +604,41 @@ def _token_value(tokens: dict, cache: dict, field: str):
     return value
 
 
+_VERSION_DIR = re.compile(r"\d+(?:\.\d+)*")
+
+
+def _skill_read_name(path) -> str | None:
+    """The skill a ``read .../SKILL.md`` names; None for any other file.
+
+    OpenCode's read tool takes ``filePath``. A card under a skills root is ``skills/<name>/SKILL.md``; a plugin
+    whose manifest sits at its install root is ``<plugin>/<version>/SKILL.md``
+    (the version is a directory, not a name). Nothing else is read out of the path.
+    """
+    if not isinstance(path, str) or not path:
+        return None
+    p = PurePosixPath(path)
+    if p.name != "SKILL.md":
+        return None
+    parts = p.parts
+    parent = p.parent
+    if parent.name == "skills":
+        # A plugin can ship one skill as `skills/SKILL.md`; the card is the
+        # plugin, not the folder. A bare `.agents/skills/SKILL.md` names none.
+        up = parent.parent
+        name = up.name
+        if not name or name.startswith("."):
+            return None
+        if _VERSION_DIR.fullmatch(name) or name == "unknown":
+            name = up.parent.name
+        return name or None
+    if len(parts) >= 3 and parts[-3] == "skills":
+        return parts[-2] or None
+    name = parent.name
+    if name and (_VERSION_DIR.fullmatch(name) or name == "unknown"):
+        return parent.parent.name or None
+    return name or None
+
+
 def write_tool_call(conn, part, data: dict, ctx: dict | None,
                     servers: tuple[str, ...], counts: Counts) -> bool:
     """One ``tool`` part -> ``tool_calls`` plus its specialised table.
@@ -633,6 +672,13 @@ def write_tool_call(conn, part, data: dict, ctx: dict | None,
          duration, (ctx or {}).get("model"), (ctx or {}).get("provider")),
     )
     counts.calls += 1
+    if name.casefold() == "read":
+        skill = _skill_read_name(args.get("filePath"))
+        if skill:
+            conn.execute(
+                "INSERT OR REPLACE INTO skill_reads(call_id, skill, session_id,"
+                " project, ts, status, duration_ms) VALUES(?,?,?,?,?,?,?)",
+                (part["id"], skill, session_id, project, ts, status, duration))
     if category == "skill":
         skill = args.get("name")
         if isinstance(skill, str) and skill:
@@ -1611,7 +1657,8 @@ def format_doc() -> str:
         f"- **Final tool statuses**: "
         f"{', '.join(f'`{s}`' for s in sorted(STATUS_FINAL))} "
         f"(non-final `{STATUS_RUNNING}` holds the cursor)\n",
-        row("Tool argument names read", SKILL_ARG_FIELDS | TASK_ARG_FIELDS),
+        row("Tool argument names read", SKILL_ARG_FIELDS | TASK_ARG_FIELDS
+            | READ_ARG_FIELDS),
         f"- **Specialising tool names**: `{SKILL_TOOL}` -> skill_usage, "
         f"{', '.join(f'`{t}`' for t in sorted(TASK_TOOLS))} -> agent_usage\n",
         f"- **MCP name shape**: `<server>{MCP_TOOL_SEP}<tool>`, resolved against "

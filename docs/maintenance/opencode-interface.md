@@ -110,7 +110,7 @@ list appended to hand-written prose states two things at once.
 - **Tool part fields**: `tool` + state `error`, `input`, `metadata`, `output`, `status`, `time`, `title`, of which `output`, `title`, `metadata` and `error` are never read
 - **Tool state times**: `end`, `start`
 - **Final tool statuses**: `completed`, `error` (non-final `running` holds the cursor)
-- **Tool argument names read**: `agent`, `name`, `subagent_type`
+- **Tool argument names read**: `agent`, `filePath`, `name`, `subagent_type`
 - **Specialising tool names**: `skill` -> skill_usage, `subagent`, `task` -> agent_usage
 - **MCP name shape**: `<server>_<tool>`, resolved against the `opencode.json` `mcp` keys, longest prefix first. A name no configured server owns stays `builtin` and is NOT counted as drift (`list_mcp_resources` is a builtin with exactly that shape). `run() reports the two numbers instead: `mcp_shape_unowned_calls` and `rows_mcp`
 - **step-finish fields**: `cost`, `reason`, `tokens`

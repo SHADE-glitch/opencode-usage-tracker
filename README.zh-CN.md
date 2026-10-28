@@ -375,15 +375,17 @@ OpenCode 自己的状态（只读——从不以写入方式打开）
 
 ### 🗄️ 数据库
 
-表：`tool_calls`、`model_calls`、`skill_usage`、`agent_usage`、`mcp_usage`、`plugin_usage`、
-`plugin_surface`、`sessions`、`inventory`、`unparsed`、`sync_state`。
+表：`tool_calls`、`model_calls`、`skill_usage`、`skill_reads`、`agent_usage`、`mcp_usage`、
+`plugin_usage`、`plugin_surface`、
+`sessions`、`inventory`、`unparsed`、`sync_state`。
 视图：`v_tools`、`v_skills`、`v_agents`、`v_mcp`、`v_plugins`。
 
 - `tool_calls`：每条工具记录一行，无论工具是什么（v1 是 `tool` part，v2 是 `session_message`
   里的工具条目）。`category` 是 `builtin | skill | agent | mcp`；`status` 是宿主自己的
   `state.status` 原样。
-- `skill_usage`：`skill` 工具的调用；skill 名读自 `state.input.name`，那是本项目允许看的两个
-  参数名之一。
+- `skill_usage`：`skill` 工具的调用；skill 名读自 `state.input.name`，那是本项目允许读的参数名之一。
+- `skill_reads`：直接读 skill 卡——`read` 调用的 `filePath` 以 `/SKILL.md` 结尾。单独一张表，
+  现有「调用次数」的口径不变；路径本身不存，只把卡片父目录记为 `skill`。
 - `agent_usage`：`task`/`subagent` 工具的调用（启动了一个子 agent），按 `state.input.subagent_type` 归类。
 - `mcp_usage`：MCP 工具调用，按名字（`<server>_<tool>`）对照宿主配置里列出的服务解析，
   **最长前缀**优先。

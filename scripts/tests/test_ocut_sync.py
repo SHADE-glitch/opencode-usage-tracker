@@ -434,6 +434,43 @@ def test_tool_calls_land_in_tool_calls_and_their_specialised_table(host, tracker
     assert cats["bash"] == "builtin"
 
 
+def test_a_skill_card_read_is_recorded_in_skill_reads(host, tracker):
+    conn = sqlite3.connect(host)
+    add_tool(conn, "prt_read", "msg_a", "ses_parent", tool="read",
+             state={"input": {"filePath":
+                              "/home/u/.agents/skills/code-review/SKILL.md"}})
+    add_tool(conn, "prt_read_other", "msg_a", "ses_parent", tool="read",
+             state={"input": {"filePath": "/p/README.md"}})
+    add_tool(conn, "prt_read_plugin", "msg_a", "ses_parent", tool="read",
+             state={"input": {"filePath":
+                              "/x/plugins/agent-browser/1.3.0/SKILL.md"}})
+    add_tool(conn, "prt_read_skills_dir", "msg_a", "ses_parent", tool="read",
+             state={"input": {"filePath":
+                              "/x/plugins/playwright-cli/skills/SKILL.md"}})
+    conn.commit()
+    conn.close()
+    run(host, tracker)
+    reads = {r["skill"]: r for r in rows(tracker, "skill_reads")}
+    assert set(reads) == {"agent-browser", "code-review", "playwright-cli"}
+    assert reads["code-review"]["status"] == "completed"
+    assert reads["code-review"]["duration_ms"] == 1000
+    assert rows(tracker, "skill_usage") == []
+
+
+def test_a_v2_skill_card_read_is_recorded(host_v2, tracker):
+    conn = sqlite3.connect(host_v2)
+    add_message_v2(
+        conn, "msg_read", "ses_v2", created=1_700_000_600_000,
+        completed=1_700_000_900_000,
+        tokens={"input": 10, "output": 2, "cache": {"read": 0, "write": 0}},
+        content=[v2_tool("call_read", "read",
+                         input={"filePath": "/x/skills/tdd/SKILL.md"})])
+    conn.commit()
+    conn.close()
+    run_v2(host_v2, tracker)
+    assert [r["skill"] for r in rows(tracker, "skill_reads")] == ["tdd"]
+
+
 def test_duration_and_status_are_carried_from_the_host_state(host, tracker):
     conn = sqlite3.connect(host)
     add_tool(conn, "prt_err", "msg_a", "ses_parent", tool="bash", status="error",

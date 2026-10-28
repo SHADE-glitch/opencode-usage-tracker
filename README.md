@@ -428,15 +428,20 @@ OpenCode's own state (read-only — never opened for writing)
 
 ### 🗄️ Database
 
-Tables: `tool_calls`, `model_calls`, `skill_usage`, `agent_usage`, `mcp_usage`,
-`plugin_usage`, `plugin_surface`, `sessions`, `inventory`, `unparsed`, `sync_state`.
+Tables: `tool_calls`, `model_calls`, `skill_usage`, `skill_reads`, `agent_usage`,
+`mcp_usage`, `plugin_usage`, `plugin_surface`, `sessions`, `inventory`, `unparsed`,
+`sync_state`.
 Views: `v_tools`, `v_skills`, `v_agents`, `v_mcp`, `v_plugins`.
 
 - `tool_calls` — one row per `tool` record, whatever the tool is (`part` in v1, a
   `session_message` tool entry in v2). `category` is `builtin | skill | agent | mcp`;
   `status` is the host's own `state.status` verbatim.
 - `skill_usage` — the `skill` tool's calls; the skill name is read from
-  `state.input.name`, one of the only two argument names this project looks at.
+  `state.input.name`, one of the argument names this project looks at.
+- `skill_reads` — direct reads of a skill card: a `read` call whose `filePath`
+  ends in `/SKILL.md`. Kept apart from `skill_usage` so every existing count of
+  invocations keeps its meaning; the path itself is not stored, only the card's
+  parent directory as `skill`.
 - `agent_usage` — the `task`/`subagent` tool's calls (a subagent was started), keyed by
   `state.input.subagent_type`.
 - `mcp_usage` — MCP tool calls, found by name (`<server>_<tool>`) and resolved against

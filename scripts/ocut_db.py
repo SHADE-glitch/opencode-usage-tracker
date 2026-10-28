@@ -23,7 +23,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import NamedTuple
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 # --- locations -------------------------------------------------------------
 
@@ -324,6 +324,19 @@ CREATE TABLE IF NOT EXISTS skill_usage (
     duration_ms  INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_skill_name ON skill_usage(skill);
+
+-- A direct Read of a skill card is not a Skill tool call: it has no args and no
+-- plugin, and counting it in skill_usage would change every existing count.
+-- `skill` is the card's parent dir (or the plugin above a <version>/ dir); path not stored.
+CREATE TABLE IF NOT EXISTS skill_reads (
+    call_id     TEXT PRIMARY KEY,
+    skill       TEXT,
+    session_id  TEXT,
+    project     TEXT,
+    ts          INTEGER,
+    status      TEXT,
+    duration_ms INTEGER
+);
 
 -- The `task` tool's calls: a subagent was started. `child_session_id` comes from
 -- the part's own metadata, so a spawn and the session it created can be joined
