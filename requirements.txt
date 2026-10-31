@@ -1,7 +1,7 @@
 # Runtime dependency of the interactive TUI (scripts/ocut-tui.py).
 # Every headless subcommand (sync/stats/tools/health/export/backup/…) needs only
 # the Python standard library.
-textual>=8.2,<9
+textual>=8.2.8,<9
 
 # The TUI dims a `removed` row's state cell with `rich.text.Text`, which DataTable
 # accepts as a renderable but does not style on its own. Declared because we import
