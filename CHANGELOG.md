@@ -2156,3 +2156,21 @@ Evidence L0 2026-10-26: `test_the_suite_never_reads_the_config_file_it_is_not_ha
          against the real `~/.config/ocut/config.toml` path before the pin; suite green.
 Cost     A fifth pinned default, and a ledger case that takes a few more frames.
 Commit   9f00aae
+
+### D-109 · 2026-11-07 · taste
+Symptom   The README pair had no table of contents, and four of its section names were
+          synonyms of the ones its sibling trackers use — the same board reached by a different map in
+          each repository. Two citations named a section by its position rather than by its name, and
+          the order they counted had already moved.
+Change    Both sides now open with a table of contents under the four-part lead, in the tracker
+          order (Why · How it works · Requirements · Install · Usage · Configuration · Backups ·
+          Repository layout · Troubleshooting · Known limitations · Uninstall · Contributing ·
+          License); the synonyms take the family names on both languages; the positional citations
+          become anchor links that resolve in each language.
+Evidence  L0 2026-11-07 `python3 -m pytest scripts/tests -q` green; `~/.agents/scripts/audit-layout.sh`
+          reports this repository compliant; every relative link and `#anchor` in the tracked markdown
+          resolves, including the two MAINTENANCE citations rewritten in the same commit.
+Cost      Five section anchors change. The documents that named them — the README's own cross-reference
+          and both halves of MAINTENANCE — were updated in the same commit, so nothing points at a
+          heading that no longer answers.
+Commit    1ca5c77
