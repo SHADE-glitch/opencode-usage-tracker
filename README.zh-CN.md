@@ -42,7 +42,23 @@ MCP 工具、每一步模型的 token、以及每个会话——谁被调用、�
 
 ---
 
-## 🤔 为什么
+## 📖 目录
+
+- [🤔 为什么做这个](#-为什么做这个)
+- [🏗️ 工作原理](#️-工作原理)
+- [📋 环境要求](#-环境要求)
+- [🚀 安装](#-安装)
+- [🧭 使用](#-使用)
+- [⚙️ 配置](#️-配置)
+- [💾 备份](#-备份)
+- [📁 仓库结构](#-仓库结构)
+- [🔧 故障排查](#-故障排查)
+- [🚧 已知限制](#-已知限制)
+- [🧹 卸载](#-卸载)
+- [🤝 参与贡献](#-参与贡献)
+- [📄 许可证](#-许可证)
+
+## 🤔 为什么做这个
 
 OpenCode 已经把你需要的东西落盘了——只是那个形状是为「恢复会话」而设的，不是为回答
 「我到底在用哪些 skill」而设的。
@@ -85,6 +101,81 @@ OpenCode 把插件的工具记在工具自己的名字下，没有任何东西�
 
 ---
 
+## 🏗️ 工作原理
+
+`ocut` **只读** OpenCode 自己的状态，把需要的东西复制进自己的数据库；绝不写回 OpenCode。
+
+```
+OpenCode 自己的状态（只读——从不以写入方式打开）
+  ~/.local/share/opencode/opencode.db    session · message · part  （v1）
+                                         session_v2 · session_message  （v2）
+  ~/.config/opencode/                    已安装的 skills · agents · commands · mcp · plugin
+        │
+        │  ocut sync   → scripts/ocut-sync.py   （以 mode=ro 打开宿主）
+        ▼
+~/.local/share/opencode-usage-tracker/usage.db   （SQLite——tracker 自己的库）
+        │
+        │  读取
+        ├── ocut                 → scripts/ocut-tui.py    （Textual TUI，八个 tab，需要 venv）
+        ├── ocut stats|tools|…   → scripts/ocut-stats.py  （无头报表，仅标准库）
+        └── ocut backup|restore|vacuum|format
+
+  ~/.local/share/opencode-usage-tracker/plugin-events.jsonl
+        ▲  只由 plugin/ocut-hook.js 写入，由 ocut sync 摄取
+```
+
+- **来源——只读。** OpenCode 的 `opencode.db`（v1 的 `session`/`message`/`part`，v2 的
+  `session_v2`/`session_message`）以及 `~/.config/opencode` 下已安装的清单。宿主库以 `mode=ro`
+  打开并设 `PRAGMA query_only = ON`，文件不存在是错误，不是「空成功」。
+- **同步。** `ocut sync` 把需要的东西复制进 tracker 自己的库；`--full` 从头重建（重建前先快照）。
+- **存储。** `~/.local/share/opencode-usage-tracker/usage.db`——tracker 自己的 SQLite，只由
+  `ocut` 写入，WAL 模式、5 秒 busy timeout。
+- **读取方。** `ocut` 的所有命令。TUI 需要 Textual（venv）；无头报表只需要标准库。
+
+### 🗄️ 数据库
+
+表：`tool_calls`、`model_calls`、`skill_usage`、`skill_reads`、`agent_usage`、`mcp_usage`、
+`plugin_usage`、`plugin_surface`、
+`sessions`、`inventory`、`unparsed`、`sync_state`。
+视图：`v_tools`、`v_skills`、`v_agents`、`v_mcp`、`v_plugins`。
+
+- `tool_calls`：每条工具记录一行，无论工具是什么（v1 是 `tool` part，v2 是 `session_message`
+  里的工具条目）。`category` 是 `builtin | skill | agent | mcp`；`status` 是宿主自己的
+  `state.status` 原样。
+- `skill_usage`：`skill` 工具的调用；skill 名读自 `state.input.name`，那是本项目允许读的参数名之一。
+- `skill_reads`：直接读 skill 卡——`read` 调用的 `filePath` 以 `/SKILL.md` 结尾。单独一张表，
+  现有「调用次数」的口径不变；路径本身不存，只把卡片父目录记为 `skill`。
+- `agent_usage`：`task`/`subagent` 工具的调用（启动了一个子 agent），按 `state.input.subagent_type` 归类。
+- `mcp_usage`：MCP 工具调用，按名字（`<server>_<tool>`）对照宿主配置里列出的服务解析，
+  **最长前缀**优先。
+- `model_calls`：每个模型步一行（v1 的 `step-finish`，v2 的 assistant message）；token 与 cost
+  在这里，模型来自 message。
+- `sessions`：每个 OpenCode 会话一行（含子会话），带宿主自己的按会话 rollup。`sessions` 与
+  `model_calls` 是同一测量的两个粒度，**绝不相加**。
+- `inventory`：装了什么，读自宿主的目录与配置：skills、agents、commands、MCP 服务、插件、
+  provider、每个已配置 provider 提供的模型，以及每个插件注册的工具 id。`model` 行的
+  `owner_plugin` 就是它的 provider id。这份目录服务于 `ocut inventory`，**不是** Tokens 行——
+  Tokens 只列真正回答过的模型，所以「提供了但没用过」的模型不会出现在那里。
+- `plugin_usage`：hook 看到的每次插件工具/命令调用一行。这是唯一一张数据来自宿主库之外的表。
+- `plugin_surface`：每个插件加载时注册的工具与命令 id，由 hook 上报；`ocut sync` 在文件系统重写
+  之后把它折回 `inventory`，并丢掉已不再安装的插件留下的行。
+- `sync_state`：读取器跟踪的每张宿主表一行：rowid 游标，加上宿主自己的 `count(*)`/`max(rowid)`，
+  以及一个 `note`——被裁剪或重新编号的表在这里说话。游标会在批次里第一条非终态的 `running`
+  tool part 处**回退**，好让在行插入之后才结束的调用被重读；回退有上限，所以一个被中断的会话不会
+  永远钉住游标。
+- `unparsed`：索引器看到但用不了的记录，按 reason 归类。这是「OpenCode 持久化格式变了」的运行时信号。
+
+直接查询：
+
+```bash
+sqlite3 ~/.local/share/opencode-usage-tracker/usage.db \
+  "SELECT tool_name, calls, errors FROM v_tools ORDER BY calls DESC LIMIT 10;"
+sqlite3 ~/.local/share/opencode-usage-tracker/usage.db \
+  "SELECT skill, calls, last_ts FROM v_skills ORDER BY calls DESC LIMIT 10;"
+```
+
+---
+
 ## 📋 环境要求
 
 | | |
@@ -100,7 +191,7 @@ OpenCode 把插件的工具记在工具自己的名字下，没有任何东西�
 
 ---
 
-## 📥 安装
+## 🚀 安装
 
 ### 📦 一键安装
 
@@ -311,7 +402,7 @@ ocut format  [--write]
 `--server`）可以放在子命令**之前或之后**：`ocut --limit 5 tools` 与 `ocut tools --limit 5`
 等价。命令名绝不会被误当成某个参数的值。
 
-## ⚙️ 设置
+## ⚙️ 配置
 
 **零配置是一种被支持的配置**：没有文件时每个键都取默认值，什么都不会被创建。设置文件是
 **`~/.config/ocut/config.toml`**（用 `OCUT_CONFIG` 改路径；`XDG_CONFIG_HOME` 会被尊重），
@@ -350,81 +441,6 @@ ocut format  [--write]
 
 ---
 
-## 🔬 工作原理
-
-`ocut` **只读** OpenCode 自己的状态，把需要的东西复制进自己的数据库；绝不写回 OpenCode。
-
-```
-OpenCode 自己的状态（只读——从不以写入方式打开）
-  ~/.local/share/opencode/opencode.db    session · message · part  （v1）
-                                         session_v2 · session_message  （v2）
-  ~/.config/opencode/                    已安装的 skills · agents · commands · mcp · plugin
-        │
-        │  ocut sync   → scripts/ocut-sync.py   （以 mode=ro 打开宿主）
-        ▼
-~/.local/share/opencode-usage-tracker/usage.db   （SQLite——tracker 自己的库）
-        │
-        │  读取
-        ├── ocut                 → scripts/ocut-tui.py    （Textual TUI，八个 tab，需要 venv）
-        ├── ocut stats|tools|…   → scripts/ocut-stats.py  （无头报表，仅标准库）
-        └── ocut backup|restore|vacuum|format
-
-  ~/.local/share/opencode-usage-tracker/plugin-events.jsonl
-        ▲  只由 plugin/ocut-hook.js 写入，由 ocut sync 摄取
-```
-
-- **来源——只读。** OpenCode 的 `opencode.db`（v1 的 `session`/`message`/`part`，v2 的
-  `session_v2`/`session_message`）以及 `~/.config/opencode` 下已安装的清单。宿主库以 `mode=ro`
-  打开并设 `PRAGMA query_only = ON`，文件不存在是错误，不是「空成功」。
-- **同步。** `ocut sync` 把需要的东西复制进 tracker 自己的库；`--full` 从头重建（重建前先快照）。
-- **存储。** `~/.local/share/opencode-usage-tracker/usage.db`——tracker 自己的 SQLite，只由
-  `ocut` 写入，WAL 模式、5 秒 busy timeout。
-- **读取方。** `ocut` 的所有命令。TUI 需要 Textual（venv）；无头报表只需要标准库。
-
-### 🗄️ 数据库
-
-表：`tool_calls`、`model_calls`、`skill_usage`、`skill_reads`、`agent_usage`、`mcp_usage`、
-`plugin_usage`、`plugin_surface`、
-`sessions`、`inventory`、`unparsed`、`sync_state`。
-视图：`v_tools`、`v_skills`、`v_agents`、`v_mcp`、`v_plugins`。
-
-- `tool_calls`：每条工具记录一行，无论工具是什么（v1 是 `tool` part，v2 是 `session_message`
-  里的工具条目）。`category` 是 `builtin | skill | agent | mcp`；`status` 是宿主自己的
-  `state.status` 原样。
-- `skill_usage`：`skill` 工具的调用；skill 名读自 `state.input.name`，那是本项目允许读的参数名之一。
-- `skill_reads`：直接读 skill 卡——`read` 调用的 `filePath` 以 `/SKILL.md` 结尾。单独一张表，
-  现有「调用次数」的口径不变；路径本身不存，只把卡片父目录记为 `skill`。
-- `agent_usage`：`task`/`subagent` 工具的调用（启动了一个子 agent），按 `state.input.subagent_type` 归类。
-- `mcp_usage`：MCP 工具调用，按名字（`<server>_<tool>`）对照宿主配置里列出的服务解析，
-  **最长前缀**优先。
-- `model_calls`：每个模型步一行（v1 的 `step-finish`，v2 的 assistant message）；token 与 cost
-  在这里，模型来自 message。
-- `sessions`：每个 OpenCode 会话一行（含子会话），带宿主自己的按会话 rollup。`sessions` 与
-  `model_calls` 是同一测量的两个粒度，**绝不相加**。
-- `inventory`：装了什么，读自宿主的目录与配置：skills、agents、commands、MCP 服务、插件、
-  provider、每个已配置 provider 提供的模型，以及每个插件注册的工具 id。`model` 行的
-  `owner_plugin` 就是它的 provider id。这份目录服务于 `ocut inventory`，**不是** Tokens 行——
-  Tokens 只列真正回答过的模型，所以「提供了但没用过」的模型不会出现在那里。
-- `plugin_usage`：hook 看到的每次插件工具/命令调用一行。这是唯一一张数据来自宿主库之外的表。
-- `plugin_surface`：每个插件加载时注册的工具与命令 id，由 hook 上报；`ocut sync` 在文件系统重写
-  之后把它折回 `inventory`，并丢掉已不再安装的插件留下的行。
-- `sync_state`：读取器跟踪的每张宿主表一行：rowid 游标，加上宿主自己的 `count(*)`/`max(rowid)`，
-  以及一个 `note`——被裁剪或重新编号的表在这里说话。游标会在批次里第一条非终态的 `running`
-  tool part 处**回退**，好让在行插入之后才结束的调用被重读；回退有上限，所以一个被中断的会话不会
-  永远钉住游标。
-- `unparsed`：索引器看到但用不了的记录，按 reason 归类。这是「OpenCode 持久化格式变了」的运行时信号。
-
-直接查询：
-
-```bash
-sqlite3 ~/.local/share/opencode-usage-tracker/usage.db \
-  "SELECT tool_name, calls, errors FROM v_tools ORDER BY calls DESC LIMIT 10;"
-sqlite3 ~/.local/share/opencode-usage-tracker/usage.db \
-  "SELECT skill, calls, last_ts FROM v_skills ORDER BY calls DESC LIMIT 10;"
-```
-
----
-
 ## 💾 备份
 
 ```bash
@@ -452,6 +468,26 @@ ocut vacuum            # 压缩文件，并报告回收回来多少
 拿回来的东西：切索引只是把页**停在** freelist 上而不还给系统，所以文件会一直保持原来的大小，
 直到有东西重写它。什么时候跑：在一次删掉某些东西的结构变更之后，或者文件大小与行数对不上的时
 候——**不要**按排班跑，因为它会重写整个文件，并且需要再放下一份副本的空间。**先关掉 TUI。**
+
+---
+
+## 📁 仓库结构
+
+| 路径 | 作用 |
+|---|---|
+| `bin/ocut` | bash 分发器（位置无关，靠软链接自解析） |
+| `plugin/ocut-hook.js` | 唯一一个可选 OpenCode 插件——写 sidecar，从不打开宿主库 |
+| `scripts/ocut_db.py` | 共享数据层：schema、设置、查询、快照 |
+| `scripts/ocut-sync.py` | 被动读取器：宿主库 → tracker 库 |
+| `scripts/ocut-tui.py` | Textual TUI（八个 tab） |
+| `scripts/ocut-stats.py` | 无头报表（仅标准库） |
+| `scripts/tests/` | pytest 测试 |
+| `docs/maintenance/` | 三份参考：`compatibility.md`（每条说法属于哪个版本）、`opencode-interface.md`（按名字读取的每个宿主名词）、`measurements.md`（任何体积 / 速率 / 时长背后的命令） |
+| `~/.local/share/opencode-usage-tracker/usage.db` | 主数据库（WAL 模式） |
+| `~/.local/share/opencode-usage-tracker/plugin-events.jsonl` | 插件用量 sidecar |
+
+> **运行这套东西之前先读 `MAINTENANCE.zh-CN.md`**（英文：`MAINTENANCE.md`）：该查什么、每条不变量
+> 对应哪个测试、以及哪些缺陷是**刻意不修**的（别顺手改回去）。它后面那三份参考是活得比一次编辑更久的部分。
 
 ---
 
@@ -544,26 +580,6 @@ ocut vacuum            # 压缩文件，并报告回收回来多少
 
 ---
 
-## 📦 仓库结构
-
-| 路径 | 作用 |
-|---|---|
-| `bin/ocut` | bash 分发器（位置无关，靠软链接自解析） |
-| `plugin/ocut-hook.js` | 唯一一个可选 OpenCode 插件——写 sidecar，从不打开宿主库 |
-| `scripts/ocut_db.py` | 共享数据层：schema、设置、查询、快照 |
-| `scripts/ocut-sync.py` | 被动读取器：宿主库 → tracker 库 |
-| `scripts/ocut-tui.py` | Textual TUI（八个 tab） |
-| `scripts/ocut-stats.py` | 无头报表（仅标准库） |
-| `scripts/tests/` | pytest 测试 |
-| `docs/maintenance/` | 三份参考：`compatibility.md`（每条说法属于哪个版本）、`opencode-interface.md`（按名字读取的每个宿主名词）、`measurements.md`（任何体积 / 速率 / 时长背后的命令） |
-| `~/.local/share/opencode-usage-tracker/usage.db` | 主数据库（WAL 模式） |
-| `~/.local/share/opencode-usage-tracker/plugin-events.jsonl` | 插件用量 sidecar |
-
-> **运行这套东西之前先读 `MAINTENANCE.zh-CN.md`**（英文：`MAINTENANCE.md`）：该查什么、每条不变量
-> 对应哪个测试、以及哪些缺陷是**刻意不修**的（别顺手改回去）。它后面那三份参考是活得比一次编辑更久的部分。
-
----
-
 ## 🧹 卸载
 
 ```bash
@@ -600,6 +616,6 @@ python3 -m pytest scripts/tests -q     # 仅标准库；TUI 测试需要 textual
 
 ---
 
-## ⚖️ 许可证
+## 📄 许可证
 
 [MIT](LICENSE) © 2026 SHADE-glitch

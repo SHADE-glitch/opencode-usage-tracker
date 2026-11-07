@@ -45,7 +45,23 @@ dashboard reports `Failed` and `Running` as two panels, not one.
 
 ---
 
-## 🤔 Why
+## 📖 Table of Contents
+
+- [🤔 Why this exists](#-why-this-exists)
+- [🏗️ How it works](#️-how-it-works)
+- [📋 Requirements](#-requirements)
+- [🚀 Install](#-install)
+- [🧭 Usage](#-usage)
+- [⚙️ Configuration](#️-configuration)
+- [💾 Backups](#-backups)
+- [📁 Repository layout](#-repository-layout)
+- [🔧 Troubleshooting](#-troubleshooting)
+- [🚧 Known limitations](#-known-limitations)
+- [🧹 Uninstall](#-uninstall)
+- [🤝 Contributing](#-contributing)
+- [📄 License](#-license)
+
+## 🤔 Why this exists
 
 OpenCode already persists what you need — but in a shape built for resuming sessions,
 not for answering "which of my skills do I actually use?".
@@ -95,6 +111,95 @@ opens OpenCode's database.
 
 ---
 
+## 🏗️ How it works
+
+`ocut` reads OpenCode's own state **read-only** and copies what it needs into its own
+database; nothing is ever written back to OpenCode.
+
+```
+OpenCode's own state (read-only — never opened for writing)
+  ~/.local/share/opencode/opencode.db    session · message · part  (v1)
+                                         session_v2 · session_message  (v2)
+  ~/.config/opencode/                    installed skills · agents · commands · mcp · plugin
+        │
+        │  ocut sync   → scripts/ocut-sync.py   (opens the host with mode=ro)
+        ▼
+~/.local/share/opencode-usage-tracker/usage.db   (SQLite — the tracker's own store)
+        │
+        │  reads
+        ├── ocut                 → scripts/ocut-tui.py    (Textual TUI, eight tabs, needs venv)
+        ├── ocut stats|tools|…   → scripts/ocut-stats.py  (headless reports, stdlib only)
+        └── ocut backup|restore|vacuum|format
+
+  ~/.local/share/opencode-usage-tracker/plugin-events.jsonl
+        ▲  written only by plugin/ocut-hook.js, ingested by ocut sync
+```
+
+- **Source — read-only.** OpenCode's `opencode.db` (`session`/`message`/`part` in v1,
+  `session_v2`/`session_message` in v2) plus the installed inventory under
+  `~/.config/opencode`. The host database is opened `mode=ro` with
+  `PRAGMA query_only = ON`, and a missing file is an error, not an empty success.
+- **Sync.** `ocut sync` copies what it needs into the tracker's own database; `--full`
+  rebuilds it from scratch (after a snapshot).
+- **Store.** `~/.local/share/opencode-usage-tracker/usage.db` — the tracker's own SQLite,
+  written only by `ocut`, in WAL mode with a 5-second busy timeout.
+- **Readers.** Every `ocut` command. The TUI needs Textual (a venv); the headless reports
+  need only the standard library.
+
+### 🗄️ Database
+
+Tables: `tool_calls`, `model_calls`, `skill_usage`, `skill_reads`, `agent_usage`,
+`mcp_usage`, `plugin_usage`, `plugin_surface`, `sessions`, `inventory`, `unparsed`,
+`sync_state`.
+Views: `v_tools`, `v_skills`, `v_agents`, `v_mcp`, `v_plugins`.
+
+- `tool_calls` — one row per `tool` record, whatever the tool is (`part` in v1, a
+  `session_message` tool entry in v2). `category` is `builtin | skill | agent | mcp`;
+  `status` is the host's own `state.status` verbatim.
+- `skill_usage` — the `skill` tool's calls; the skill name is read from
+  `state.input.name`, one of the argument names this project looks at.
+- `skill_reads` — direct reads of a skill card: a `read` call whose `filePath`
+  ends in `/SKILL.md`. Kept apart from `skill_usage` so every existing count of
+  invocations keeps its meaning; the path itself is not stored, only the card's
+  parent directory as `skill`.
+- `agent_usage` — the `task`/`subagent` tool's calls (a subagent was started), keyed by
+  `state.input.subagent_type`.
+- `mcp_usage` — MCP tool calls, found by name (`<server>_<tool>`) and resolved against
+  the servers the host's config lists, longest prefix first.
+- `model_calls` — one row per model step (`step-finish` in v1, assistant message in
+  v2); tokens and cost live here, the model comes from the message.
+- `sessions` — one row per OpenCode session (including child sessions), with the host's
+  own per-session rollup. `sessions` and `model_calls` are one measurement at two
+  granularities and are **never added**.
+- `inventory` — what is installed, from the host's directories and config: skills, agents,
+  commands, MCP servers, plugins, providers, the models each configured provider offers,
+  and the tool ids each plugin registers. A `model` row's `owner_plugin` is its provider
+  id. This catalogue answers `ocut inventory`; it is **not** a Tokens row — Tokens lists
+  only models that answered, so an offered-but-unused model does not appear there.
+- `plugin_usage` — one row per plugin tool/command call the hook saw. This is the one
+  table fed from outside the host database.
+- `plugin_surface` — the tool and command ids each plugin registers, as reported by the
+  hook at load; `ocut sync` folds it back into `inventory` after the filesystem rewrite,
+  and drops the rows of a plugin that is no longer installed.
+- `sync_state` — one row per host table the reader tracks: the rowid cursor plus the
+  host's own `count(*)`/`max(rowid)` and a `note` where a pruned or renumbered table says
+  so. The cursor is held back at the first non-final `running` tool part so a call that
+  finishes after the row was inserted is re-read; the hold is capped, so an interrupted
+  session cannot pin the cursor forever.
+- `unparsed` — records the indexer saw but could not use, keyed by reason. This is the
+  runtime signal that OpenCode's persisted format moved.
+
+Query it directly:
+
+```bash
+sqlite3 ~/.local/share/opencode-usage-tracker/usage.db \
+  "SELECT tool_name, calls, errors FROM v_tools ORDER BY calls DESC LIMIT 10;"
+sqlite3 ~/.local/share/opencode-usage-tracker/usage.db \
+  "SELECT skill, calls, last_ts FROM v_skills ORDER BY calls DESC LIMIT 10;"
+```
+
+---
+
 ## 📋 Requirements
 
 | | |
@@ -112,7 +217,7 @@ OpenCode's own Bun runtime and needs nothing installed separately.
 
 ---
 
-## 📥 Install
+## 🚀 Install
 
 ### 📦 Out of the box
 
@@ -357,7 +462,7 @@ Global value flags (`--db`, `--kind`, `--limit`, `--host-db`, `--host-config`,
 `--plugin-events`, `--server`) may sit before **or** after the subcommand: `ocut --limit 5 tools` and
 `ocut tools --limit 5` are the same. A command is never mistaken for a flag's value.
 
-## ⚙️ Settings
+## ⚙️ Configuration
 
 Zero configuration is a supported configuration: with no file, every key takes its
 default and nothing is created. Settings live in **`~/.config/ocut/config.toml`**
@@ -399,95 +504,6 @@ silently ignored is the worst outcome this layer can produce.
 
 ---
 
-## 🔬 How it works
-
-`ocut` reads OpenCode's own state **read-only** and copies what it needs into its own
-database; nothing is ever written back to OpenCode.
-
-```
-OpenCode's own state (read-only — never opened for writing)
-  ~/.local/share/opencode/opencode.db    session · message · part  (v1)
-                                         session_v2 · session_message  (v2)
-  ~/.config/opencode/                    installed skills · agents · commands · mcp · plugin
-        │
-        │  ocut sync   → scripts/ocut-sync.py   (opens the host with mode=ro)
-        ▼
-~/.local/share/opencode-usage-tracker/usage.db   (SQLite — the tracker's own store)
-        │
-        │  reads
-        ├── ocut                 → scripts/ocut-tui.py    (Textual TUI, eight tabs, needs venv)
-        ├── ocut stats|tools|…   → scripts/ocut-stats.py  (headless reports, stdlib only)
-        └── ocut backup|restore|vacuum|format
-
-  ~/.local/share/opencode-usage-tracker/plugin-events.jsonl
-        ▲  written only by plugin/ocut-hook.js, ingested by ocut sync
-```
-
-- **Source — read-only.** OpenCode's `opencode.db` (`session`/`message`/`part` in v1,
-  `session_v2`/`session_message` in v2) plus the installed inventory under
-  `~/.config/opencode`. The host database is opened `mode=ro` with
-  `PRAGMA query_only = ON`, and a missing file is an error, not an empty success.
-- **Sync.** `ocut sync` copies what it needs into the tracker's own database; `--full`
-  rebuilds it from scratch (after a snapshot).
-- **Store.** `~/.local/share/opencode-usage-tracker/usage.db` — the tracker's own SQLite,
-  written only by `ocut`, in WAL mode with a 5-second busy timeout.
-- **Readers.** Every `ocut` command. The TUI needs Textual (a venv); the headless reports
-  need only the standard library.
-
-### 🗄️ Database
-
-Tables: `tool_calls`, `model_calls`, `skill_usage`, `skill_reads`, `agent_usage`,
-`mcp_usage`, `plugin_usage`, `plugin_surface`, `sessions`, `inventory`, `unparsed`,
-`sync_state`.
-Views: `v_tools`, `v_skills`, `v_agents`, `v_mcp`, `v_plugins`.
-
-- `tool_calls` — one row per `tool` record, whatever the tool is (`part` in v1, a
-  `session_message` tool entry in v2). `category` is `builtin | skill | agent | mcp`;
-  `status` is the host's own `state.status` verbatim.
-- `skill_usage` — the `skill` tool's calls; the skill name is read from
-  `state.input.name`, one of the argument names this project looks at.
-- `skill_reads` — direct reads of a skill card: a `read` call whose `filePath`
-  ends in `/SKILL.md`. Kept apart from `skill_usage` so every existing count of
-  invocations keeps its meaning; the path itself is not stored, only the card's
-  parent directory as `skill`.
-- `agent_usage` — the `task`/`subagent` tool's calls (a subagent was started), keyed by
-  `state.input.subagent_type`.
-- `mcp_usage` — MCP tool calls, found by name (`<server>_<tool>`) and resolved against
-  the servers the host's config lists, longest prefix first.
-- `model_calls` — one row per model step (`step-finish` in v1, assistant message in
-  v2); tokens and cost live here, the model comes from the message.
-- `sessions` — one row per OpenCode session (including child sessions), with the host's
-  own per-session rollup. `sessions` and `model_calls` are one measurement at two
-  granularities and are **never added**.
-- `inventory` — what is installed, from the host's directories and config: skills, agents,
-  commands, MCP servers, plugins, providers, the models each configured provider offers,
-  and the tool ids each plugin registers. A `model` row's `owner_plugin` is its provider
-  id. This catalogue answers `ocut inventory`; it is **not** a Tokens row — Tokens lists
-  only models that answered, so an offered-but-unused model does not appear there.
-- `plugin_usage` — one row per plugin tool/command call the hook saw. This is the one
-  table fed from outside the host database.
-- `plugin_surface` — the tool and command ids each plugin registers, as reported by the
-  hook at load; `ocut sync` folds it back into `inventory` after the filesystem rewrite,
-  and drops the rows of a plugin that is no longer installed.
-- `sync_state` — one row per host table the reader tracks: the rowid cursor plus the
-  host's own `count(*)`/`max(rowid)` and a `note` where a pruned or renumbered table says
-  so. The cursor is held back at the first non-final `running` tool part so a call that
-  finishes after the row was inserted is re-read; the hold is capped, so an interrupted
-  session cannot pin the cursor forever.
-- `unparsed` — records the indexer saw but could not use, keyed by reason. This is the
-  runtime signal that OpenCode's persisted format moved.
-
-Query it directly:
-
-```bash
-sqlite3 ~/.local/share/opencode-usage-tracker/usage.db \
-  "SELECT tool_name, calls, errors FROM v_tools ORDER BY calls DESC LIMIT 10;"
-sqlite3 ~/.local/share/opencode-usage-tracker/usage.db \
-  "SELECT skill, calls, last_ts FROM v_skills ORDER BY calls DESC LIMIT 10;"
-```
-
----
-
 ## 💾 Backups
 
 ```bash
@@ -525,6 +541,53 @@ the TUI first.**
 
 ---
 
+## 📁 Repository layout
+
+```
+opencode-usage-tracker/
+├── README.md                     # this file (English)
+├── README.zh-CN.md               # full documentation, Chinese
+├── MAINTENANCE.md                # operating checklist (English)
+├── MAINTENANCE.zh-CN.md          # operating checklist, Chinese
+├── AGENTS.md                     # the agent contract (architecture, invariants, CI)
+├── LICENSE                       # MIT
+├── install.sh                    # idempotent installer
+├── requirements.txt              # textual (the TUI's only dependency)
+├── requirements-dev.txt          # + pytest
+├── bin/ocut                      # bash dispatcher (location-independent)
+├── plugin/ocut-hook.js           # the one optional OpenCode plugin — writes the sidecar
+├── scripts/ocut_db.py            # shared data layer: schema, settings, queries, snapshots
+├── scripts/ocut-sync.py          # the passive reader: host database → tracker database
+├── scripts/ocut-tui.py           # Textual TUI (eight tabs)
+├── scripts/ocut-stats.py         # headless reports (stdlib only)
+├── scripts/tests/                # pytest suite
+└── docs/maintenance/             # compat matrix · host interface · measurements
+```
+
+### 🧑💻 Development
+
+```bash
+python3 -m pytest scripts/tests -q                       # standard library only; TUI tests
+#                                                         need textual
+.venv/bin/python -m pytest scripts/tests -q              # full suite, incl. TUI tests
+.venv/bin/python -m pytest scripts/tests -q -n auto      # the same suite in parallel
+#                                                         (pytest-xdist; timing in
+#                                                         docs/maintenance/measurements.md §6)
+```
+
+**Before operating this on a machine you care about**, read
+[MAINTENANCE.md](MAINTENANCE.md) (Chinese: `MAINTENANCE.zh-CN.md`): the checks to run, the
+invariants with the test guarding each one, and the deviations that must not be "fixed"
+back. Behind it sit three references:
+[`docs/maintenance/compatibility.md`](docs/maintenance/compatibility.md) records the pins
+and which OpenCode release each claim belongs to,
+[`docs/maintenance/opencode-interface.md`](docs/maintenance/opencode-interface.md) lists
+every host name this project reads, and
+[`docs/maintenance/measurements.md`](docs/maintenance/measurements.md) holds the command
+behind every size, rate and duration quoted anywhere in this repository.
+
+---
+
 ## 🔧 Troubleshooting
 
 | Symptom | Cause / fix |
@@ -542,7 +605,7 @@ the TUI first.**
 ## 🚧 Known limitations
 
 The list below runs **M1–M18**. The Chinese README carries the same list with more
-detail in [§9](README.zh-CN.md#known-limitations).
+detail in [已知限制](README.zh-CN.md#-已知限制).
 
 - **M1** OpenCode's own database is the **source of truth**. `ocut` can only see what the
   host persisted; a call the host never wrote (`part` in v1, a tool entry in
@@ -647,53 +710,6 @@ detail in [§9](README.zh-CN.md#known-limitations).
 
 ---
 
-## 📦 Repository layout
-
-```
-opencode-usage-tracker/
-├── README.md                     # this file (English)
-├── README.zh-CN.md               # full documentation, Chinese
-├── MAINTENANCE.md                # operating checklist (English)
-├── MAINTENANCE.zh-CN.md          # operating checklist, Chinese
-├── AGENTS.md                     # the agent contract (architecture, invariants, CI)
-├── LICENSE                       # MIT
-├── install.sh                    # idempotent installer
-├── requirements.txt              # textual (the TUI's only dependency)
-├── requirements-dev.txt          # + pytest
-├── bin/ocut                      # bash dispatcher (location-independent)
-├── plugin/ocut-hook.js           # the one optional OpenCode plugin — writes the sidecar
-├── scripts/ocut_db.py            # shared data layer: schema, settings, queries, snapshots
-├── scripts/ocut-sync.py          # the passive reader: host database → tracker database
-├── scripts/ocut-tui.py           # Textual TUI (eight tabs)
-├── scripts/ocut-stats.py         # headless reports (stdlib only)
-├── scripts/tests/                # pytest suite
-└── docs/maintenance/             # compat matrix · host interface · measurements
-```
-
-### 🧑💻 Development
-
-```bash
-python3 -m pytest scripts/tests -q                       # standard library only; TUI tests
-#                                                         need textual
-.venv/bin/python -m pytest scripts/tests -q              # full suite, incl. TUI tests
-.venv/bin/python -m pytest scripts/tests -q -n auto      # the same suite in parallel
-#                                                         (pytest-xdist; timing in
-#                                                         docs/maintenance/measurements.md §6)
-```
-
-**Before operating this on a machine you care about**, read
-[MAINTENANCE.md](MAINTENANCE.md) (Chinese: `MAINTENANCE.zh-CN.md`): the checks to run, the
-invariants with the test guarding each one, and the deviations that must not be "fixed"
-back. Behind it sit three references:
-[`docs/maintenance/compatibility.md`](docs/maintenance/compatibility.md) records the pins
-and which OpenCode release each claim belongs to,
-[`docs/maintenance/opencode-interface.md`](docs/maintenance/opencode-interface.md) lists
-every host name this project reads, and
-[`docs/maintenance/measurements.md`](docs/maintenance/measurements.md) holds the command
-behind every size, rate and duration quoted anywhere in this repository.
-
----
-
 ## 🧹 Uninstall
 
 ```bash
@@ -731,6 +747,6 @@ same limitations, the same tabs and the same keys.
 
 ---
 
-## ⚖️ License
+## 📄 License
 
 [MIT](LICENSE) © 2026 SHADE-glitch
