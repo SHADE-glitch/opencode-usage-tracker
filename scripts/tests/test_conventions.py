@@ -84,11 +84,15 @@ STANDARD_HEADINGS = (
     "Runtime ignore list",
     "Conflict rule",
     "Remotes and pushing",
+    "Profile listing (cross-dimension)",
+    "Retiring a repository (cross-dimension)",
+    "About (the GitHub front door)",
+    "Citation stability (append-only)",
     "Audit ruleset (anchor)",
     "The three dimensions",
     "The shared common core",
     "Where each dimension's detail lives",
-    "Unify the common core; never flatten",
+    "Unify the common core; never flatten what is a repo's own",
     "Where a repository points",
 )
 
@@ -152,7 +156,8 @@ def copied_standard_headings(text: str) -> list[str]:
 
     A repository's own `## CI` or `## Conventions` is an ordinary section title.
     A line that reproduces the standard's `## 5. CI` — heading marks, section
-    number, and the standard's exact title — is a copy of it.
+    number, and the standard's title — is a copy of it. A trailing parenthetical
+    counts as an annotation, not as part of the title.
     """
     found = set()
     for raw in text.splitlines():
@@ -160,8 +165,17 @@ def copied_standard_headings(text: str) -> list[str]:
         if not line.startswith("#"):
             continue
         m = re.fullmatch(r"(\d+)\.\s*(.+)", re.sub(r"^#+\s*", "", line))
-        if m and m.group(2).strip() in STANDARD_HEADINGS:
-            found.add(m.group(2).strip())
+        if not m:
+            continue
+        full = m.group(2).strip()
+        # Either spelling counts. A trailing note is not part of the title
+        # ("The shared common core (measured 2026-10-31, ...)"), but a bracket that
+        # names the section is ("Root files (the finalized layer)") — so match the
+        # heading with and without its last parenthetical.
+        title = re.sub(r"\s*\([^()]*\)\s*$", "", full)
+        hit = full if full in STANDARD_HEADINGS else (title if title in STANDARD_HEADINGS else None)
+        if hit:
+            found.add(hit)
     return sorted(found)
 
 
