@@ -8,11 +8,17 @@
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
 [![Repository](https://img.shields.io/badge/repository-GitHub-black?logo=github)](https://github.com/SHADE-glitch/opencode-usage-tracker)
 
-<p align="center"><img src="docs/screenshots/dashboard.png" alt="仪表盘（演示索引）" width="900"></p>
-
 **是什么** —— 一个被动只读的追踪器，展示你实际是怎么用 OpenCode 的：每一次工具调用、每个 skill、子 agent、MCP 工具、模型步骤与会话。
 
 **解决什么** —— OpenCode 为「恢复会话」而落盘，回答不了「我到底在用哪些 skill」；`ocut` 把这些数据索引进自己的库，变成面板与报表。
+
+<p align="center"><img src="docs/screenshots/dashboard.png" alt="仪表盘（演示索引）" width="900"></p>
+
+<p align="center"><em><b>仪表盘</b> —— 你在 OpenCode 里真正用过什么，一个窗口看完：工具、skill、子代理、模型与每一步的成本。演示索引，不含真实机器数据。</em></p>
+
+<p align="center"><img src="docs/screenshots/demo.gif" alt="依次切换 TUI 的八个标签页" width="900"></p>
+
+<p align="center"><em><b>动图内容：</b>从仪表盘开始，依次走完工具、技能、代理、插件、MCP、Token、用量八个标签页。<b>展示的功能：</b>一份从 OpenCode 自己的数据库建起的索引，八种切法——工具与技能按名称、代理按类型、插件按归属、Token 按模型，再加一张请求日志——每个标签页各有自己的时间窗口。</em></p>
 
 **怎么跑** —— `./install.sh`，然后 `ocut sync`。
 
@@ -162,10 +168,6 @@ ln -sf "$PWD/bin/ocut" ~/.local/bin/ocut
 ---
 
 ## 🧭 使用
-
-<p align="center"><img src="docs/screenshots/demo.gif" alt="依次切换 TUI 的八个标签页" width="900"></p>
-
-<p align="center"><em><b>动图内容：</b>从仪表盘开始，依次走完工具、技能、代理、插件、MCP、Token、用量八个标签页。<b>展示的功能：</b>一份从 OpenCode 自己的数据库建起的索引，八种切法——工具与技能按名称、代理按类型、插件按归属、Token 按模型，再加一张请求日志——每个标签页各有自己的时间窗口。</em></p>
 
 ### 🖥️ 交互式 TUI
 

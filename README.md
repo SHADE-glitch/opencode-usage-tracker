@@ -8,11 +8,17 @@
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
 [![Repository](https://img.shields.io/badge/repository-GitHub-black?logo=github)](https://github.com/SHADE-glitch/opencode-usage-tracker)
 
-<p align="center"><img src="docs/screenshots/dashboard.png" alt="The dashboard, running against a demo index" width="900"></p>
-
 **What it is** — A passive, read-only tracker that shows how you actually use OpenCode: every tool call, skill, subagent, MCP tool, model step and session.
 
 **What it solves** — OpenCode persists sessions for resuming, not for answering "which skills do I actually use?"; `ocut` indexes that data into its own database and turns it into panels and reports.
+
+<p align="center"><img src="docs/screenshots/dashboard.png" alt="The dashboard, running against a demo index" width="900"></p>
+
+<p align="center"><em><b>The dashboard</b> — what you actually used in OpenCode in one window: tools, skills, subagents, models and what each step cost. Demo index, no real machine.</em></p>
+
+<p align="center"><img src="docs/screenshots/demo.gif" alt="Stepping through all eight tabs of the TUI" width="900"></p>
+
+<p align="center"><em><b>In the clip:</b> the tour starts on the Dashboard and steps through Tools, Skills, Agents, Plugins, MCP, Tokens and Usage. <b>What it shows:</b> one index built from OpenCode's own database, cut eight ways — tools and skills by name, agents by type, plugins by owner, tokens per model, and a request log — each tab with its own time window.</em></p>
 
 **How to run** — `./install.sh`, then `ocut sync`.
 
@@ -179,10 +185,6 @@ bare TUI needs the venv. You can also point the launcher at a venv of your own w
 ---
 
 ## 🧭 Usage
-
-<p align="center"><img src="docs/screenshots/demo.gif" alt="Stepping through all eight tabs of the TUI" width="900"></p>
-
-<p align="center"><em><b>In the clip:</b> the tour starts on the Dashboard and steps through Tools, Skills, Agents, Plugins, MCP, Tokens and Usage. <b>What it shows:</b> one index built from OpenCode's own database, cut eight ways — tools and skills by name, agents by type, plugins by owner, tokens per model, and a request log — each tab with its own time window.</em></p>
 
 ### 🖥️ Interactive TUI
 
