@@ -8,6 +8,8 @@
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
 [![Repository](https://img.shields.io/badge/repository-GitHub-black?logo=github)](https://github.com/SHADE-glitch/opencode-usage-tracker)
 
+<p align="center"><img src="docs/screenshots/dashboard.png" alt="The dashboard, running against a demo index" width="900"></p>
+
 **What it is** — A passive, read-only tracker that shows how you actually use OpenCode: every tool call, skill, subagent, MCP tool, model step and session.
 
 **What it solves** — OpenCode persists sessions for resuming, not for answering "which skills do I actually use?"; `ocut` indexes that data into its own database and turns it into panels and reports.
@@ -177,6 +179,8 @@ bare TUI needs the venv. You can also point the launcher at a venv of your own w
 ---
 
 ## 🧭 Usage
+
+<p align="center"><img src="docs/screenshots/demo.gif" alt="Switching the window and opening a tab" width="900"></p>
 
 ### 🖥️ Interactive TUI
 

@@ -8,6 +8,8 @@
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
 [![Repository](https://img.shields.io/badge/repository-GitHub-black?logo=github)](https://github.com/SHADE-glitch/opencode-usage-tracker)
 
+<p align="center"><img src="docs/screenshots/dashboard.png" alt="仪表盘（演示索引）" width="900"></p>
+
 **是什么** —— 一个被动只读的追踪器，展示你实际是怎么用 OpenCode 的：每一次工具调用、每个 skill、子 agent、MCP 工具、模型步骤与会话。
 
 **解决什么** —— OpenCode 为「恢复会话」而落盘，回答不了「我到底在用哪些 skill」；`ocut` 把这些数据索引进自己的库，变成面板与报表。
@@ -160,6 +162,8 @@ ln -sf "$PWD/bin/ocut" ~/.local/bin/ocut
 ---
 
 ## 🧭 使用
+
+<p align="center"><img src="docs/screenshots/demo.gif" alt="切换统计窗口与标签页" width="900"></p>
 
 ### 🖥️ 交互式 TUI
 
