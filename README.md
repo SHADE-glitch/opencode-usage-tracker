@@ -180,7 +180,9 @@ bare TUI needs the venv. You can also point the launcher at a venv of your own w
 
 ## 🧭 Usage
 
-<p align="center"><img src="docs/screenshots/demo.gif" alt="Switching the window and opening a tab" width="900"></p>
+<p align="center"><img src="docs/screenshots/demo.gif" alt="Stepping through all eight tabs of the TUI" width="900"></p>
+
+<p align="center"><em><b>In the clip:</b> the tour starts on the Dashboard and steps through Tools, Skills, Agents, Plugins, MCP, Tokens and Usage. <b>What it shows:</b> one index built from OpenCode's own database, cut eight ways — tools and skills by name, agents by type, plugins by owner, tokens per model, and a request log — each tab with its own time window.</em></p>
 
 ### 🖥️ Interactive TUI
 

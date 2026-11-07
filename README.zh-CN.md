@@ -163,7 +163,9 @@ ln -sf "$PWD/bin/ocut" ~/.local/bin/ocut
 
 ## 🧭 使用
 
-<p align="center"><img src="docs/screenshots/demo.gif" alt="切换统计窗口与标签页" width="900"></p>
+<p align="center"><img src="docs/screenshots/demo.gif" alt="依次切换 TUI 的八个标签页" width="900"></p>
+
+<p align="center"><em><b>动图内容：</b>从仪表盘开始，依次走完工具、技能、代理、插件、MCP、Token、用量八个标签页。<b>展示的功能：</b>一份从 OpenCode 自己的数据库建起的索引，八种切法——工具与技能按名称、代理按类型、插件按归属、Token 按模型，再加一张请求日志——每个标签页各有自己的时间窗口。</em></p>
 
 ### 🖥️ 交互式 TUI
 
