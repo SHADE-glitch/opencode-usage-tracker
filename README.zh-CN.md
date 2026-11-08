@@ -20,6 +20,10 @@
 
 <p align="center"><em><b>动图内容：</b>从仪表盘开始，依次走完工具、技能、代理、插件、MCP、Token、用量八个标签页。<b>展示的功能：</b>一份从 OpenCode 自己的数据库建起的索引，八种切法——工具与技能按名称、代理按类型、插件按归属、Token 按模型，再加一张请求日志——每个标签页各有自己的时间窗口。</em></p>
 
+<p align="center"><img src="docs/screenshots/demo-range.gif" alt="把时间范围从 30 天切到 7 天，再切到 1 天" width="900"></p>
+
+<p align="center"><em><b>动图内容：</b> 停留在仪表盘，把时间范围依次走完 30 天、7 天、1 天，每一步的 Token 与成本都重新聚合。 <b>展示的功能：</b> 一份从 OpenCode 自己的数据库建起的索引，时间窗口只属于当前标签页。</em></p>
+
 **怎么跑** —— `./install.sh`，然后 `ocut sync`。
 
 **去哪看** —— 见 [AGENTS.md](AGENTS.md) 与 [MAINTENANCE.md](MAINTENANCE.md)。

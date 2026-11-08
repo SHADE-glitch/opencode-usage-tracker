@@ -20,6 +20,10 @@
 
 <p align="center"><em><b>In the clip:</b> the tour starts on the Dashboard and steps through Tools, Skills, Agents, Plugins, MCP, Tokens and Usage. <b>What it shows:</b> one index built from OpenCode's own database, cut eight ways — tools and skills by name, agents by type, plugins by owner, tokens per model, and a request log — each tab with its own time window.</em></p>
 
+<p align="center"><img src="docs/screenshots/demo-range.gif" alt="Switching the time range from 30 days to 7 days and then to 1 day" width="900"></p>
+
+<p align="center"><em><b>In the clip:</b> the tour fixes on the Dashboard and walks the range selector through 30 days, 7 days and 1 day, with tokens and costs re-aggregated at each step. <b>What it shows:</b> one index built from OpenCode's own database, cut by a window that belongs to this tab alone.</em></p>
+
 **How to run** — `./install.sh`, then `ocut sync`.
 
 **Where to look** — See [AGENTS.md](AGENTS.md) and [MAINTENANCE.md](MAINTENANCE.md).
