@@ -226,7 +226,8 @@ ocut           # 启动交互式 TUI（八个 tab）
    `bin/ocut` 从它自己所在的仓库解析 `scripts/` 目录，所以脚本从不被复制到用户路径。如果某个
    位置已经有真实文件或目录，脚本会**拒绝覆盖**并告诉你该把什么挪走；加 `--force` 才会替换。
 
-3. 跑一次 `ocut health` 并打印后续步骤。
+3. 安装并启用 `ocut-sync.timer`（每 15 分钟定时同步；加 `--no-timer` 可跳过），
+   然后跑一次 `ocut health` 并打印后续步骤。
 
 > 确保 `~/.local/bin` 在 `PATH` 里。若不在，把 `export PATH="$HOME/.local/bin:$PATH"` 加进你的 shell 配置。
 

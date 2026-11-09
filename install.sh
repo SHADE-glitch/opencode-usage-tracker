@@ -9,8 +9,9 @@
 #   ~/.local/bin/ocut                        -> bin/ocut
 #   ~/.config/opencode/plugin/ocut-hook.js   -> plugin/ocut-hook.js
 #
-#   ./install.sh            install (refuses to replace real files/dirs)
-#   ./install.sh --force    also replace existing real files/dirs
+#   ./install.sh             install (refuses to replace real files/dirs)
+#   ./install.sh --force     also replace existing real files/dirs
+#   ./install.sh --no-timer  install without enabling the scheduled-sync timer
 #
 # `ocut` itself needs only python3 for its headless subcommands (sync / stats /
 # health / export / backup / …); the interactive TUI needs the venv. The hook is
@@ -23,12 +24,15 @@
 set -euo pipefail
 
 FORCE=0
+NO_TIMER=0
 for arg in "$@"; do
   case "$arg" in
     --force) FORCE=1 ;;
+    --no-timer) NO_TIMER=1 ;;
     -h|--help)
-      echo "usage: ./install.sh [--force]"
-      echo "  --force   replace existing non-symlink files/dirs at the install locations"
+      echo "usage: ./install.sh [--force] [--no-timer]"
+      echo "  --force     replace existing non-symlink files/dirs at the install locations"
+      echo "  --no-timer  install without enabling the scheduled-sync systemd user timer"
       exit 0
       ;;
     *)
@@ -111,6 +115,29 @@ echo
 echo "==> ocut health"
 "$BIN_DIR/ocut" health || echo "  (health reported something — see the lines above)"
 
+# --- 4. scheduled sync -----------------------------------------------------
+# The timer ships in systemd/ but was never installed by this script, so the
+# index silently went stale. Install it for real; skip gracefully where a
+# user-level systemd instance is unavailable (macOS, WSL, containers, CI) so
+# install.sh still works there.
+if [ "$NO_TIMER" -eq 1 ]; then
+  echo "==> skipping scheduled sync (--no-timer)"
+elif [ ! -f "$REPO_DIR/systemd/ocut-sync.service" ] || \
+     [ ! -f "$REPO_DIR/systemd/ocut-sync.timer" ]; then
+  echo "==> skipping scheduled sync: unit files are missing"
+elif ! command -v systemctl >/dev/null 2>&1; then
+  echo "==> skipping scheduled sync: systemctl not found"
+elif ! systemctl --user show-environment >/dev/null 2>&1; then
+  echo "==> skipping scheduled sync: no user-level systemd instance"
+else
+  UNIT_DIR="$HOME/.config/systemd/user"
+  mkdir -p "$UNIT_DIR"
+  cp "$REPO_DIR/systemd/ocut-sync.service" "$REPO_DIR/systemd/ocut-sync.timer" "$UNIT_DIR/"
+  systemctl --user daemon-reload
+  systemctl --user enable --now ocut-sync.timer
+  echo "==> scheduled sync enabled: ocut-sync.timer (every 15 minutes)"
+fi
+
 cat <<EOF
 
 Installed.
@@ -124,3 +151,13 @@ Restart OpenCode so it loads the hook from $CONFIG_DIR/plugin/.
 Plugin usage is recorded only after that restart; a plugin the hook has never
 seen shows 0 uses, which is "nothing recorded", not "not used".
 EOF
+if [ "$NO_TIMER" -eq 1 ]; then
+  echo
+  echo "Scheduled sync was skipped (--no-timer); re-run ./install.sh to enable it."
+else
+  cat <<EOF
+
+Scheduled sync is enabled (ocut-sync.timer, every 15 minutes). Turn it off with:
+  systemctl --user disable --now ocut-sync.timer
+EOF
+fi

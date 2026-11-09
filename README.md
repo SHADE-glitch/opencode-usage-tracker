@@ -255,7 +255,8 @@ ocut           # launch the interactive TUI (eight tabs)
    directory, the script **refuses to overwrite it** and tells you what to move; pass
    `--force` to replace it.
 
-3. runs `ocut health` once and prints the next steps.
+3. installs and enables `ocut-sync.timer` (scheduled sync every 15 minutes;
+   `--no-timer` skips it), then runs `ocut health` and prints the next steps.
 
 > Make sure `~/.local/bin` is on your `PATH`. If it is not, add
 > `export PATH="$HOME/.local/bin:$PATH"` to your shell profile.
