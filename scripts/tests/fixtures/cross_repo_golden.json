@@ -1070,6 +1070,106 @@
       "14d": 14,
       "30d": 30,
       "all": null
+    },
+    "rules": {
+      "note": "Until this block, only Usage Total had an executable cross-repo guard; the other three family rules were maintained by eye. Each maintained repo now runs one self-check (test_cross_repo_golden.py) that reads ONLY its own tree and asserts the signatures below against its own variant. The board's TestSharedPresets pins the shared rules themselves. tcut is archived and carries no fixture and no guard by design.",
+      "enter_open": {
+        "subclass": "Table",
+        "base": "DataTable",
+        "key": "enter",
+        "action": "select_cursor",
+        "description": "Open"
+      },
+      "card_fill": {
+        "spare_to": "min_height",
+        "refit": "on_resize"
+      },
+      "isolation": {
+        "own_database": true,
+        "every_host_default": true,
+        "positive_and_control_proofs": true
+      },
+      "maintained": ["aut", "cbut", "ocut", "qcut"],
+      "frozen": ["tcut"]
+    },
+    "variants": {
+      "aut": {
+        "tui": "scripts/aut_app.py",
+        "plain_datatable_ids": [],
+        "fit_function": "_fit_cards",
+        "fit_owner": "DashboardPane",
+        "isolation_guard": "scripts/tests/test_aut.py",
+        "isolation_literals": ["class AdapterCase", "patch.dict", "HOME"],
+        "guard_tests": {
+          "scripts/tests/test_aut.py": [
+            "test_the_cards_take_the_height_the_pane_has_left",
+            "test_usage_does_not_offer_an_open_that_cannot_happen",
+            "test_absent_database_is_missing_not_an_error"
+          ]
+        }
+      },
+      "cbut": {
+        "tui": "scripts/cbut-tui.py",
+        "plain_datatable_ids": ["dash-projects", "t-usage"],
+        "fit_function": "_fit_dashboard",
+        "fit_owner": "DashBox",
+        "isolation_guard": "scripts/tests/_hermetic.py",
+        "isolation_literals": ["PROTECTED = ", "PROTECTED_DIRS = ", "PROTECTED_CONFIG_DIR = ", "CBUT_CODEBUDDY_DIR"],
+        "guard_tests": {
+          "scripts/tests/test_tui.py": [
+            "test_enter_is_in_the_footer_only_where_a_row_opens",
+            "test_the_project_ledger_takes_the_height_the_rows_leave",
+            "test_every_datatable_in_the_source_is_registered"
+          ],
+          "scripts/tests/test_hermetic.py": [
+            "test_reading_the_real_host_footprint_is_refused",
+            "test_reading_the_real_config_file_is_refused",
+            "test_an_ordinary_test_path_is_left_alone"
+          ]
+        }
+      },
+      "ocut": {
+        "tui": "scripts/ocut-tui.py",
+        "plain_datatable_ids": ["dash-projects"],
+        "fit_function": "_fit_dashboard",
+        "fit_owner": "DashBox",
+        "isolation_guard": "scripts/tests/conftest.py",
+        "isolation_literals": ["no_real_machine", "HOST_CONFIG_DIR", "HOST_DB", "PLUGIN_EVENTS", "CONFIG_PATH", "HOME"],
+        "guard_tests": {
+          "scripts/tests/test_ocut_tui.py": [
+            "test_the_project_ledger_takes_the_height_the_rows_leave"
+          ],
+          "scripts/tests/test_ocut_hermetic.py": [
+            "test_every_host_default_is_pinned_away_from_the_real_machine",
+            "test_an_ordinary_test_database_is_left_alone"
+          ]
+        }
+      },
+      "qcut": {
+        "tui": "scripts/qcut-tui.py",
+        "plain_datatable_ids": ["plugin-table", "dash-projects", "tokens-table"],
+        "fit_function": "_fit_dashboard",
+        "fit_owner": "DashBox",
+        "isolation_guard": "scripts/tests/_hermetic.py",
+        "isolation_literals": ["PROTECTED = ", "PROTECTED_DIRS = ", "PROTECTED_CONFIG_DIR = ", "QCUT_QODER_DIR"],
+        "guard_tests": {
+          "scripts/tests/test_tui.py": [
+            "test_the_project_ledger_takes_the_height_the_rows_leave",
+            "test_every_datatable_in_the_source_is_registered"
+          ],
+          "scripts/tests/test_hermetic.py": [
+            "test_reading_the_real_config_file_is_refused",
+            "test_an_ordinary_test_host_is_left_alone"
+          ],
+          "scripts/tests/test_readme_bilingual.py": [
+            "test_the_readmes_name_one_token_total"
+          ]
+        }
+      },
+      "tcut": {
+        "frozen": true,
+        "reason": "Archived: Trae CN cannot record real tokens, so the family rules are deliberately not aligned here and no golden fixture or guard is added."
+      }
     }
   }
 }
