@@ -1,0 +1,34 @@
+{
+  "contract_version": 1,
+  "canonical_repo": "all-usage-trackers",
+  "canonical_document": "FAMILY_CONTRACT.md",
+  "note": "Four byte-identical copies live in each repo's scripts/tests/fixtures/. CI checks out one repo at a time, so a test must never read a sibling repo's path.",
+  "members": {
+    "cbut": {"role": "tracker", "records": "CodeBuddy CLI", "tabs": 8, "timer": "every 15 min"},
+    "ocut": {"role": "tracker", "records": "OpenCode CLI", "tabs": 8, "timer": "every 15 min"},
+    "qcut": {"role": "tracker", "records": "Qoder CN app + CLI", "tabs": 8, "timer": "daily"},
+    "aut": {"role": "board (passive consumer)", "records": "reads the three indexes", "tabs": 6, "timer": "none"}
+  },
+  "common": {
+    "tracker_tabs": ["dashboard", "tools", "skills", "agents", "plugins", "mcp", "tokens", "usage"],
+    "usage_ranges": {"1d": 1, "2d": 2, "3d": 3, "7d": 7, "14d": 14, "30d": 30, "all": null},
+    "headless_core": ["sync", "stats", "health", "show", "recent", "inventory", "export", "backup", "restore", "vacuum", "format"],
+    "sync_flags": ["--full", "--quiet"],
+    "install_flags": ["--force", "--no-timer"],
+    "unit_pattern": "<key>-sync.{service,timer}",
+    "unit_exec": "%h/.local/bin/<key> sync --quiet",
+    "fixtures": ["cross_repo_golden.json", "family_contract.json"]
+  },
+  "allowed_deviations": {
+    "board_tabs": "aut: dashboard, tools, skills, tokens, usage, sources (6; sources replaces the per-agent/plugin/MCP detail views)",
+    "no_credits_ocut": "OpenCode reports no credit value; cbut stores model_responses.credit, qcut stores model_calls.credits",
+    "qoder_token_availability": "QODERCN_EXPOSE_TOKEN_USAGE=1 on the CLI enables real tokens; BYOK routes report tokens with no credits; row_reports_tokens renders a route-level zero as a dash",
+    "usage_total_formulas": "cbut/ocut/qcut each own their expression; cross_repo_golden.json pins each repo's own answer",
+    "null_semantics": "absent field is NULL, never a fabricated 0; a reported 0 stays 0",
+    "timer_frequency": "cbut/ocut 15m, qcut daily, aut none; qcut keeps daily (decided 2026-11-09)",
+    "headless_extras": "ocut modes; qcut commands/env; cbut sessions; aut board commands",
+    "schema_names": "cbut model_responses; ocut/qcut model_calls with differing columns",
+    "one_token_total": "Usage Total only; no second unnamed total (API Total removed)"
+  },
+  "excluded": ["runtime shared library", "monorepo", "unifying timer frequency", "column/value parity"]
+}
