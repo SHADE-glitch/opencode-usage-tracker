@@ -9,10 +9,9 @@ This repository is public.
 > §4 runtime ignore list, §5 conflict rule, §6 remotes/pushing, §8 profile listing) and the
 > dimension-A detail in `~/.agents/standards/dimensions/a.md`. Neither is restated here.
 >
-> **Read these before the first edit** (bare `@` imports — CodeBuddy expands them; opencode reads
-> the same two from `opencode.json`):
-> @~/.agents/standards/STANDARD.md
-> @~/.agents/standards/dimensions/a.md
+> **Read these before the first edit:**
+> `~/.agents/standards/STANDARD.md`
+> `~/.agents/standards/dimensions/a.md`
 
 ## What this is
 
