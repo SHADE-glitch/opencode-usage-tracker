@@ -141,6 +141,21 @@ class RootLayerTest(unittest.TestCase):
                          f"this is a dimension-A tool: remove the {extra} from the root, "
                          "or record the exception in AGENTS.md")
 
+    def test_ci_checks_out_full_history(self):
+        """dimensions/a.md §2: checkout uses `fetch-depth: 0`.
+
+        `check:log` walks `git log <anchor>..HEAD`. A shallow checkout makes the
+        anchor unreachable, and the history gate then reports a broken record
+        instead of the truncated clone that caused it — a false alarm that costs
+        more than the check it protects.
+        """
+        ci = REPO / ".github" / "workflows" / "ci.yml"
+        self.assertTrue(ci.is_file(),
+                        "ci.yml is missing — dimension A runs its offline layer from one workflow")
+        self.assertIn("fetch-depth: 0", ci.read_text(encoding="utf-8"),
+                      "ci.yml checks out shallow — add `with: fetch-depth: 0` to the checkout "
+                      "step, or `check:log` cannot reach the anchor it walks from")
+
     def test_agents_zh_cn_does_not_exist(self):
         """The bilingual AGENTS pair belongs to dimension B, not to this one."""
         self.assertFalse((REPO / "AGENTS.zh-CN.md").exists(),
