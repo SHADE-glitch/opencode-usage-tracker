@@ -38,3 +38,5 @@ jobs:
         # same shape as the serial one. The serial commands in MAINTENANCE.md §4
         # stay the record; this is the same suite, spread over the runner's cores.
         run: python3 -m pytest scripts/tests -q -n auto
+      - name: Standards block matches the lock
+        run: python3 scripts/render_standards.py --verify-lock .
