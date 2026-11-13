@@ -2194,7 +2194,7 @@ Cost      The list stays a snapshot: this repository's CI cannot read ~/.agents,
           ~/.agents/scripts/audit.sh, which reports it instead of waiting for a red build that never arrives.
 Commit    b4465a5
 
-### D-111 · 2026-11-12 · docs
+### D-111 · 2026-11-12 · chore
 Symptom   The project-level rules pointer block in AGENTS.md used bare `@~/.agents/standards/...` imports
           to pull in the machine-wide standard. That only delivers the rule text to agents that expand `@`
           imports or read `opencode.json`; an agent that does neither holds the pointer and none of the
@@ -2211,6 +2211,7 @@ Cost      The pointer is a local copy of the instruction; the tool-neutral contr
           text. Whether that text actually reaches a session is a per-tool check, not a repository guard.
 
 ---
+Commit    bef6a40
 
 ### D-112 · 2026-11-13 · chore
 
@@ -2224,3 +2225,4 @@ Evidence  `python3 scripts/tests/test_conventions.py` exits 0; `bash ~/.agents/s
           repositories pass the layout check).
 Cost      No per-assistant config remains, so an agent that ignores the pointer is undetected by any
           local guard; that was already true of the file it replaced.
+Commit    00df945
