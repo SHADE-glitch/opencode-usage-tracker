@@ -195,14 +195,18 @@ class AgentsPointerTest(unittest.TestCase):
                       "the dimension line must point at CONVENTIONS.md so a reader "
                       "can find the other dimensions")
 
-    def test_agents_md_does_not_copy_the_standard(self):
-        """STANDARD.md is the single source; a copied heading means a second copy."""
-        quoted = copied_standard_headings(self.text)
-        self.assertEqual([], quoted,
-                         "AGENTS.md quotes the standard's own section heading(s) "
-                         f"{quoted}: replace them with a clause name (the standard's "
-                         "'Runtime ignore list', not 'Standard §4') so there is "
-                         "exactly one copy to keep correct")
+    def test_agents_md_carries_the_generated_block(self):
+        """The shared rules are copied in, because a session may not reach ~/.agents."""
+        begin, end = "<!-- BEGIN standards-core", "<!-- END standards-core"
+        self.assertIn(begin, self.text,
+                      "AGENTS.md carries no standards-core block — render it: "
+                      "python3 ~/.agents/scripts/render_standards.py --write .")
+        self.assertIn(end, self.text,
+                      "the standards-core block is not closed — the END marker is missing")
+        block = self.text[self.text.index(begin):self.text.index(end)]
+        for source in ("STANDARD.md", "dimensions/"):
+            self.assertIn(source, block,
+                          f"the standards-core block does not name {source} as a source")
 
 
 class RuntimeStateTest(unittest.TestCase):

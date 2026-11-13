@@ -2226,3 +2226,16 @@ Evidence  `python3 scripts/tests/test_conventions.py` exits 0; `bash ~/.agents/s
 Cost      No per-assistant config remains, so an agent that ignores the pointer is undetected by any
           local guard; that was already true of the file it replaced.
 Commit    00df945
+
+### D-113 · 2026-11-13 · chore
+
+Symptom   `AGENTS.md` only pointed at the machine-wide standard. A session that cannot read
+          `~/.agents` silently lost every shared rule, while the pointer still looked well-formed.
+Change    Carried the shared floor and this repository's dimension card inline, in a generated
+          `standards-core` block rendered by `render_standards.py`; the dimension line now
+          describes the block instead of delegating to a path outside the checkout.
+Evidence  `python3 ~/.agents/scripts/render_standards.py --check .` reports the block in sync, the
+          repository's own guard and suite are green, and `bash ~/.agents/scripts/audit.sh` exits 0.
+Cost      `AGENTS.md` grows by about 10.5 KB, paid on every session read; the copy can drift, so the
+          drift check is the only thing keeping it honest and it exists only on this machine.
+Commit    dd42939
