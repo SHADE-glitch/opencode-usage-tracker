@@ -2209,3 +2209,18 @@ Evidence  `python3 -m pytest scripts/tests/test_conventions.py` → 9 passed. Th
           test, which snapshots the STANDARD.md headings that AGENTS.md restates, stays green.
 Cost      The pointer is a local copy of the instruction; the tool-neutral contract is what carries the rule
           text. Whether that text actually reaches a session is a per-tool check, not a repository guard.
+
+---
+
+### D-112 · 2026-11-13 · chore
+
+Symptom   The repository carried an `opencode.json` whose only content was the two standard pointers
+          already present in `AGENTS.md`; a second copy of the delivery instruction that could drift
+          with no guard noticing it had gone stale.
+Change    Removed `opencode.json` from the root layer and dropped it from the layout guard's
+          `ROOT_FILES` list; `STANDARD.md` §1 no longer requires it. Delivery is the pointer block
+          plus the machine-level `GLOBAL.md` contract.
+Evidence  `python3 scripts/tests/test_conventions.py` exits 0; `bash ~/.agents/scripts/audit.sh` exits 0 (all governed
+          repositories pass the layout check).
+Cost      No per-assistant config remains, so an agent that ignores the pointer is undetected by any
+          local guard; that was already true of the file it replaced.

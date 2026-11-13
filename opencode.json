@@ -1,7 +1,0 @@
-{
-  "$schema": "https://opencode.ai/config.json",
-  "instructions": [
-    "~/.agents/standards/STANDARD.md",
-    "~/.agents/standards/dimensions/a.md"
-  ]
-}
